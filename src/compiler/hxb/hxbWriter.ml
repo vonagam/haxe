@@ -37,6 +37,9 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 	method write_ui16 i =
 		IO.write_ui16 ch i;
 
+	method write_i16 i =
+		IO.write_i16 ch i;
+
 	method write_i32 i =
 		IO.write_real_i32 ch (Int32.of_int i);
 
@@ -172,6 +175,39 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 	method write_types tl =
 		self#write_list16 tl self#write_type_instance
 
+	(* texpr *)
+
+	method write_texpr (e : texpr) =
+		let pos_deltas = DynArray.create () in
+		let total_expr_counter = ref 0 in
+		let expr_counter = ref 0 in
+		let curmin = ref e.epos.pmin in
+		let curmax = ref e.epos.pmax in
+		let check_pos p =
+			incr total_expr_counter;
+			let dmin = p.pmin - !curmin in
+			let dmax = p.pmax - !curmax in
+			if dmin <> 0 || dmax <> 0 then begin
+				curmin := p.pmin;
+				curmax := p.pmax;
+				DynArray.add pos_deltas (!expr_counter,dmin,dmax);
+				expr_counter := 0;
+			end else
+				incr expr_counter
+		in
+		let rec loop e =
+			check_pos e.epos;
+			Type.iter loop e;
+		in
+		loop e;
+		self#write_pos e.epos;
+		self#write_ui16 !total_expr_counter;
+		self#write_list16 (DynArray.to_list pos_deltas) (fun (i,dmin,dmax) ->
+			self#write_ui16 i;
+			self#write_i16 dmin;
+			self#write_i16 dmax;
+		)
+
 	(* field *)
 
 	method write_field_kind = function
@@ -221,7 +257,8 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_metadata cf.cf_meta;
 		self#write_type_params cf.cf_params;
 		self#write_field_kind cf.cf_kind;
-		(* TODO: kind, expr, expr_unoptimized *)
+		self#write_option cf.cf_expr self#write_texpr;
+		(* TODO: expr, expr_unoptimized *)
 		self#write_list16 cf.cf_overloads self#write_class_field;
 		(* self#write_i32 cf.cf_flags *)
 
@@ -282,7 +319,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			(* TODO: init *)
 			self#write_list16 c.cl_overrides (fun cf -> self#write_string cf.cf_name);
 		| _ ->
-			()
+			self#write_byte 1;
 			(* TODO *)
 
 	method write_module m =
