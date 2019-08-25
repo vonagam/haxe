@@ -301,6 +301,7 @@ let generate tctx ext interp swf_header =
 		| Cpp | Cs | Java | Php -> Path.mkdir_from_path (com.file ^ "/.")
 		| _ -> Path.mkdir_from_path com.file
 	end;
+	List.iter (test_hxb com) com.modules;
 	if interp then
 		Std.finally (Timer.timer ["interp"]) MacroContext.interpret tctx
 	else if com.platform = Cross then

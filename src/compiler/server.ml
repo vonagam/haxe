@@ -70,6 +70,24 @@ let check_display_flush ctx f_otherwise = match ctx.com.json_out with
 			api.send_error errors
 		end
 
+let test_hxb com m =
+	if m.m_extra.m_kind = MCode then begin
+		let ch = IO.output_bytes() in
+		let cp = new HxbWriter.hxb_constant_pool_writer in
+		let writer = new HxbWriter.hxb_writer ch cp in
+		writer#write_module m;
+		let bytes_module = IO.close_out ch in
+		let ch = IO.output_bytes() in
+		cp#export ch;
+		let bytes_cp = IO.close_out ch in
+		let path = m.m_path in
+		let l = ((dump_path com) :: "hxb" :: (platform_name_macro com) :: fst path @ [snd path]) in
+		let ch_file = Path.create_file true ".hxb" [] l in
+		output_bytes ch_file bytes_cp;
+		output_bytes ch_file bytes_module;
+		close_out ch_file
+	end
+
 let default_flush ctx =
 	check_display_flush ctx (fun () ->
 		List.iter
