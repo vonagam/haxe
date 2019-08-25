@@ -91,11 +91,13 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 
 	(* type instance *)
 
-	method write_type_instance t =
+	val mutable last_type = Bytes.create 0
+
+	method write_type_instance' t =
 		let write_function_arg (n,o,t) =
 			self#write_string n;
 			self#write_bool o;
-			self#write_type_instance t;
+			self#write_type_instance' t;
 		in
 		match t with
 		| TMono r ->
@@ -103,7 +105,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			| None -> self#write_byte 0
 			| Some t ->
 				self#write_byte 1;
-				self#write_type_instance t
+				self#write_type_instance' t
 			end
 		| TInst(c,[]) ->
 			self#write_byte 10;
@@ -142,12 +144,12 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_byte 32;
 			self#write_list16 args write_function_arg;
 		| TLazy r ->
-			self#write_type_instance (lazy_type r);
+			self#write_type_instance' (lazy_type r);
 		| TDynamic t ->
 			if t == t_dynamic then self#write_byte 40
 			else begin
 				self#write_byte 41;
-				self#write_type_instance t;
+				self#write_type_instance' t;
 			end
 		| TAnon an ->
 			begin match !(an.a_status) with
@@ -172,10 +174,36 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 				()
 			end;
 
+	method write_type_instance t =
+		let bytes =
+			let ch = IO.output_bytes() in
+			let type_writer = new hxb_writer ch cp in
+			type_writer#write_type_instance' t;
+			IO.close_out ch
+		in
+		if bytes = last_type then
+			self#write_byte 0xFF
+		else
+			IO.nwrite ch bytes
+
 	method write_types tl =
 		self#write_list16 tl self#write_type_instance
 
 	(* texpr *)
+
+	method write_var v =
+		self#write_i32 v.v_id;
+		self#write_string v.v_name;
+		self#write_type_instance v.v_type;
+		(* TODO: kind *)
+		self#write_bool v.v_capture;
+		self#write_bool v.v_final;
+		self#write_option v.v_extra (fun (tl,eo) ->
+			self#write_type_params tl;
+			self#write_option eo self#write_texpr;
+		);
+		self#write_metadata v.v_meta;
+		self#write_pos v.v_pos;
 
 	method write_texpr (e : texpr) =
 		let pos_deltas = DynArray.create () in
@@ -183,8 +211,9 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		let expr_counter = ref 0 in
 		let curmin = ref e.epos.pmin in
 		let curmax = ref e.epos.pmax in
-		let check_pos p =
+		let check_diff t p =
 			incr total_expr_counter;
+			self#write_type_instance t;
 			let dmin = p.pmin - !curmin in
 			let dmax = p.pmax - !curmax in
 			if dmin <> 0 || dmax <> 0 then begin
@@ -196,8 +225,285 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 				incr expr_counter
 		in
 		let rec loop e =
-			check_pos e.epos;
-			Type.iter loop e;
+			check_diff e.etype e.epos;
+			match e.eexpr with
+			(* values 0-19 *)
+			| TConst ct ->
+				begin match ct with
+				| TNull ->
+					self#write_byte 0;
+				| TThis ->
+					self#write_byte 1;
+				| TSuper ->
+					self#write_byte 2;
+				| TBool false ->
+					self#write_byte 3;
+				| TBool true ->
+					self#write_byte 4;
+				| TInt i32 ->
+					self#write_byte 5;
+					IO.write_real_i32 ch i32;
+				| TFloat f ->
+					self#write_byte 6;
+					self#write_string f;
+				| TString s ->
+					self#write_byte 7;
+					self#write_string s
+				end
+			(* vars 20-29 *)
+			| TLocal v ->
+				self#write_byte 20;
+				self#write_i32 v.v_id;
+			| TVar(v,None) ->
+				self#write_byte 21;
+				self#write_var v;
+			| TVar(v,Some e1) ->
+				self#write_byte 22;
+				self#write_var v;
+				loop e1;
+			(* blocks 30-49 *)
+			| TBlock [] ->
+				self#write_byte 30;
+			| TBlock el ->
+				let l = List.length el in
+				begin match l with
+				| 1 -> self#write_byte 31;
+				| 2 -> self#write_byte 32;
+				| 3 -> self#write_byte 33;
+				| 4 -> self#write_byte 34;
+				| 5 -> self#write_byte 35;
+				| _ ->
+					if l <= 0xFF then begin
+						self#write_byte 36;
+						self#write_byte l;
+					end else if l < 0xFFFF then begin
+						self#write_byte 37;
+						self#write_ui16 l;
+					end else begin
+						self#write_byte 38;
+						self#write_i32 l;
+					end;
+				end;
+				List.iter loop el
+			(* function 50-59 *)
+			| TFunction tf ->
+				self#write_byte 50;
+				self#write_list16 tf.tf_args (fun (v,eo) ->
+					self#write_var v;
+					self#write_option eo loop
+				);
+				self#write_type_instance tf.tf_type;
+				loop tf.tf_expr;
+			(* texpr compounds 60-79 *)
+			| TArray(e1,e2) ->
+				self#write_byte 60;
+				loop e1;
+				loop e2;
+			| TParenthesis e1 ->
+				self#write_byte 61;
+				loop e1;
+			| TArrayDecl el ->
+				self#write_byte 62;
+				loop_el el;
+			| TObjectDecl fl ->
+				self#write_byte 63;
+				self#write_list16 fl (fun ((name,p,qs),e) ->
+					self#write_string name;
+					self#write_pos p;
+					(* TODO: qs *)
+					loop e
+				);
+			| TCall(e1,el) ->
+				self#write_byte 64;
+				loop_el el;
+			| TMeta(m,e1) ->
+				self#write_byte 65;
+				self#write_metadata_entry m;
+				loop e1;
+			(* branching 80-89 *)
+			| TIf(e1,e2,None) ->
+				self#write_byte 80;
+				loop e1;
+				loop e2;
+			| TIf(e1,e2,Some e3) ->
+				self#write_byte 81;
+				loop e1;
+				loop e2;
+				loop e3;
+			| TSwitch(e1,cases,def) ->
+				self#write_byte 82;
+				loop e1;
+				self#write_list16 cases (fun (el,e) ->
+					loop_el el;
+					loop e;
+				);
+				self#write_option def loop;
+			| TTry(e1,catches) ->
+				self#write_byte 83;
+				loop e1;
+				self#write_list16 catches  (fun (v,e) ->
+					self#write_var v;
+					loop e
+				);
+			| TWhile(e1,e2,flag) ->
+				self#write_byte (if flag = NormalWhile then 84 else 85);
+				loop e1;
+				loop e2;
+			| TFor(v,e1,e2) ->
+				self#write_byte 86;
+				self#write_var v;
+				loop e1;
+				loop e2;
+			(* control flow 90-99 *)
+			| TReturn None ->
+				self#write_byte 90;
+			| TReturn (Some e1) ->
+				self#write_byte 91;
+				loop e1;
+			| TContinue ->
+				self#write_byte 92;
+			| TBreak ->
+				self#write_byte 93;
+			| TThrow e1 ->
+				self#write_byte 94;
+				loop e1;
+			(* access 100-119 *)
+			| TEnumIndex e1 ->
+				self#write_byte 100;
+				loop e1;
+			| TEnumParameter(e1,ef,i) ->
+				self#write_byte 101;
+				loop e1;
+				self#write_string ef.ef_name; (* TODO: not sure what to do with this... *)
+				self#write_i32 i;
+			| TField(e1,FInstance(c,tl,cf)) ->
+				self#write_byte 102;
+				loop e1;
+				self#write_path c.cl_path;
+				self#write_types tl;
+				self#write_string cf.cf_name;
+			| TField(e1,FStatic(c,cf)) ->
+				self#write_byte 103;
+				loop e1;
+				self#write_path c.cl_path;
+				self#write_string cf.cf_name;
+			| TField(e1,FAnon cf) ->
+				self#write_byte 104;
+				loop e1;
+				self#write_string cf.cf_name;
+			| TField(e1,FClosure(Some(c,tl),cf)) ->
+				self#write_byte 105;
+				loop e1;
+				self#write_path c.cl_path;
+				self#write_types tl;
+				self#write_string cf.cf_name;
+			| TField(e1,FClosure(None,cf)) ->
+				self#write_byte 106;
+				loop e1;
+				self#write_string cf.cf_name;
+			| TField(e1,FEnum(en,ef)) ->
+				self#write_byte 107;
+				loop e1;
+				self#write_path en.e_path;
+				self#write_string ef.ef_name;
+			| TField(e1,FDynamic s) ->
+				self#write_byte 108;
+				loop e1;
+				self#write_string s;
+			(* module types 120-139 *)
+			| TTypeExpr (TClassDecl c) ->
+				self#write_byte 120;
+				self#write_path c.cl_path;
+			| TTypeExpr (TEnumDecl en) ->
+				self#write_byte 121;
+				self#write_path en.e_path;
+			| TTypeExpr (TAbstractDecl a) ->
+				self#write_byte 122;
+				self#write_path a.a_path
+			| TTypeExpr (TTypeDecl td) ->
+				self#write_byte 123;
+				self#write_path td.t_path
+			| TCast(e1,None) ->
+				self#write_byte 124;
+				loop e1;
+			| TCast(e1,Some md) ->
+				self#write_byte 125;
+				loop e1;
+				self#write_path (t_infos md).mt_path
+			| TNew(c,tl,el) ->
+				self#write_byte 126;
+				self#write_path c.cl_path;
+				self#write_types tl;
+				loop_el el;
+			(* unops 140-159 *)
+			| TUnop(Increment,Prefix,e1) ->
+				self#write_byte 140;
+				loop e1;
+			| TUnop(Decrement,Prefix,e1) ->
+				self#write_byte 141;
+				loop e1;
+			| TUnop(Not,Prefix,e1) ->
+				self#write_byte 142;
+				loop e1;
+			| TUnop(Neg,Prefix,e1) ->
+				self#write_byte 143;
+				loop e1;
+			| TUnop(NegBits,Prefix,e1) ->
+				self#write_byte 144;
+				loop e1;
+			| TUnop(Increment,Postfix,e1) ->
+				self#write_byte 145;
+				loop e1;
+			| TUnop(Decrement,Postfix,e1) ->
+				self#write_byte 146;
+				loop e1;
+			| TUnop(Not,Postfix,e1) ->
+				self#write_byte 147;
+				loop e1;
+			| TUnop(Neg,Postfix,e1) ->
+				self#write_byte 148;
+				loop e1;
+			| TUnop(NegBits,Postfix,e1) ->
+				self#write_byte 149;
+				loop e1;
+			(* binops 160-219 *)
+			| TBinop(op,e1,e2) ->
+				let rec idx op = match op with
+					| OpAdd -> 0
+					| OpMult -> 1
+					| OpDiv -> 2
+					| OpSub -> 3
+					| OpAssign -> 4
+					| OpEq -> 5
+					| OpNotEq -> 6
+					| OpGt -> 7
+					| OpGte -> 8
+					| OpLt -> 9
+					| OpLte -> 10
+					| OpAnd -> 11
+					| OpOr -> 12
+					| OpXor -> 13
+					| OpBoolAnd -> 14
+					| OpBoolOr -> 15
+					| OpShl -> 16
+					| OpShr -> 17
+					| OpUShr -> 18
+					| OpMod -> 19
+					| OpInterval -> 20
+					| OpArrow -> 21
+					| OpIn -> 22
+					| OpAssignOp op -> 30 + idx op
+				in
+				self#write_byte (idx op);
+				loop e1;
+				loop e2;
+			(* rest 250-254 *)
+			| TIdent s ->
+				self#write_byte 250;
+				self#write_string s;
+		and loop_el el =
+			self#write_ui16 (List.length el);
+			List.iter loop el
 		in
 		loop e;
 		self#write_pos e.epos;
