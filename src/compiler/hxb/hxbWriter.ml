@@ -74,27 +74,17 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_pos p
 
 	method write_metadata ml =
-		let meta = match ml with
-			| [] -> None
-			| _ -> Some ml
-		in
-		self#write_option meta (fun ml -> self#write_list16 ml self#write_metadata_entry)
+		self#write_list16 ml self#write_metadata_entry
 
 	method write_type_params params =
-		let params = match params with
-			| [] -> None
-			| _ -> Some params
-		in
-		self#write_option params (fun params ->
-			self#write_list16 params (fun (s,t) ->
-				self#write_string s;
-				match follow t with
-				| TInst({cl_kind = KTypeParameter tl},_) ->
-					self#write_types tl;
-				| _ ->
-					assert false
-			)
-		);
+		self#write_list16 params (fun (s,t) ->
+			self#write_string s;
+			match follow t with
+			| TInst({cl_kind = KTypeParameter tl},_) ->
+				self#write_types tl;
+			| _ ->
+				assert false
+		)
 
 	(* type instance *)
 
@@ -184,6 +174,44 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 
 	(* field *)
 
+	method write_field_kind = function
+		| Method MethNormal -> self#write_byte 0;
+		| Method MethInline -> self#write_byte 1;
+		| Method MethDynamic -> self#write_byte 2;
+		| Method MethMacro -> self#write_byte 3;
+		(* normal read *)
+		| Var {v_read = AccNormal; v_write = AccNormal } -> self#write_byte 10
+		| Var {v_read = AccNormal; v_write = AccNo } -> self#write_byte 11
+		| Var {v_read = AccNormal; v_write = AccNever } -> self#write_byte 12
+		| Var {v_read = AccNormal; v_write = AccCtor } -> self#write_byte 13
+		| Var {v_read = AccNormal; v_write = AccCall } -> self#write_byte 14
+		(* inline read *)
+		| Var {v_read = AccInline; v_write = AccNever } -> self#write_byte 20
+		(* getter read *)
+		| Var {v_read = AccCall; v_write = AccNormal } -> self#write_byte 30
+		| Var {v_read = AccCall; v_write = AccNo } -> self#write_byte 31
+		| Var {v_read = AccCall; v_write = AccNever } -> self#write_byte 32
+		| Var {v_read = AccCall; v_write = AccCtor } -> self#write_byte 33
+		| Var {v_read = AccCall; v_write = AccCall } -> self#write_byte 34
+		(* weird/overlooked combinations *)
+		| Var {v_read = r;v_write = w } ->
+			self#write_byte 100;
+			let f = function
+				| AccNormal -> self#write_byte 0
+				| AccNo -> self#write_byte 1
+				| AccNever -> self#write_byte 2
+				| AccCtor -> self#write_byte 3
+				| AccResolve -> self#write_byte 4
+				| AccCall -> self#write_byte 5
+				| AccInline -> self#write_byte 6
+				| AccRequire(s,so) ->
+					self#write_byte 7;
+					self#write_string s;
+					self#write_option so self#write_string
+			in
+			f r;
+			f w;
+
 	method write_class_field cf =
 		self#write_string cf.cf_name;
 		self#write_type_instance cf.cf_type;
@@ -192,6 +220,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_option cf.cf_doc self#write_string;
 		self#write_metadata cf.cf_meta;
 		self#write_type_params cf.cf_params;
+		self#write_field_kind cf.cf_kind;
 		(* TODO: kind, expr, expr_unoptimized *)
 		self#write_list16 cf.cf_overloads self#write_class_field;
 		(* self#write_i32 cf.cf_flags *)
