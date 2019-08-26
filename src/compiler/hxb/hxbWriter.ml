@@ -183,8 +183,10 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		in
 		if bytes = last_type then
 			self#write_byte 0xFF
-		else
+		else begin
+			last_type <- bytes;
 			IO.nwrite ch bytes
+		end;
 
 	method write_types tl =
 		self#write_list16 tl self#write_type_instance
@@ -206,23 +208,15 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_pos v.v_pos;
 
 	method write_texpr (e : texpr) =
-		let pos_deltas = DynArray.create () in
-		let total_expr_counter = ref 0 in
-		let expr_counter = ref 0 in
+		self#write_pos e.epos;
 		let curmin = ref e.epos.pmin in
 		let curmax = ref e.epos.pmax in
 		let check_diff t p =
-			incr total_expr_counter;
 			self#write_type_instance t;
 			let dmin = p.pmin - !curmin in
 			let dmax = p.pmax - !curmax in
-			if dmin <> 0 || dmax <> 0 then begin
-				curmin := p.pmin;
-				curmax := p.pmax;
-				DynArray.add pos_deltas (!expr_counter,dmin,dmax);
-				expr_counter := 0;
-			end else
-				incr expr_counter
+			self#write_ui16 dmin;
+			self#write_ui16 dmax;
 		in
 		let rec loop e =
 			check_diff e.etype e.epos;
@@ -505,14 +499,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_ui16 (List.length el);
 			List.iter loop el
 		in
-		loop e;
-		self#write_pos e.epos;
-		self#write_ui16 !total_expr_counter;
-		self#write_list16 (DynArray.to_list pos_deltas) (fun (i,dmin,dmax) ->
-			self#write_ui16 i;
-			self#write_i16 dmin;
-			self#write_i16 dmax;
-		)
+		loop e
 
 	(* field *)
 
