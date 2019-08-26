@@ -211,15 +211,17 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_pos e.epos;
 		let curmin = ref e.epos.pmin in
 		let curmax = ref e.epos.pmax in
-		let check_diff t p =
-			self#write_type_instance t;
+		let check_diff p =
 			let dmin = p.pmin - !curmin in
 			let dmax = p.pmax - !curmax in
-			self#write_ui16 dmin;
-			self#write_ui16 dmax;
+			self#write_i16 dmin;
+			self#write_i16 dmax;
+			curmin := p.pmin;
+			curmax := p.pmax;
 		in
 		let rec loop e =
-			check_diff e.etype e.epos;
+			self#write_type_instance e.etype;
+			check_diff e.epos;
 			match e.eexpr with
 			(* values 0-19 *)
 			| TConst ct ->
@@ -309,6 +311,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 				);
 			| TCall(e1,el) ->
 				self#write_byte 64;
+				loop e1;
 				loop_el el;
 			| TMeta(m,e1) ->
 				self#write_byte 65;
@@ -488,7 +491,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 					| OpIn -> 22
 					| OpAssignOp op -> 30 + idx op
 				in
-				self#write_byte (idx op);
+				self#write_byte (160 + idx op);
 				loop e1;
 				loop e2;
 			(* rest 250-254 *)
@@ -551,7 +554,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_type_params cf.cf_params;
 		self#write_field_kind cf.cf_kind;
 		self#write_option cf.cf_expr self#write_texpr;
-		(* TODO: expr, expr_unoptimized *)
+		(* TODO: expr_unoptimized *)
 		self#write_list16 cf.cf_overloads self#write_class_field;
 		(* self#write_i32 cf.cf_flags *)
 
@@ -590,7 +593,10 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_option infos.mt_doc self#write_string;
 		self#write_metadata infos.mt_meta;
 		self#write_type_params infos.mt_params;
-		(* TODO: using *)
+		self#write_list8 infos.mt_using (fun (c,p) ->
+			self#write_path c.cl_path;
+			self#write_pos p;
+		);
 		match mt with
 		| TClassDecl c ->
 			self#write_byte 0;
@@ -609,7 +615,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_option c.cl_dynamic self#write_type_instance;
 			self#write_option c.cl_array_access self#write_type_instance;
 			self#write_option c.cl_constructor self#write_class_field;
-			(* TODO: init *)
+			self#write_option c.cl_init self#write_texpr;
 			self#write_list16 c.cl_overrides (fun cf -> self#write_string cf.cf_name);
 		| _ ->
 			self#write_byte 1;
