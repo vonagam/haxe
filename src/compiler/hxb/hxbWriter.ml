@@ -101,13 +101,11 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 
 	(* type instance *)
 
-	val mutable last_type = Bytes.create 0
-
-	method write_type_instance' t =
+	method write_type_instance t =
 		let write_function_arg (n,o,t) =
 			self#write_string n;
 			self#write_bool o;
-			self#write_type_instance' t;
+			self#write_type_instance t;
 		in
 		match t with
 		| TMono r ->
@@ -115,7 +113,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			| None -> self#write_byte 0
 			| Some t ->
 				self#write_byte 1;
-				self#write_type_instance' t
+				self#write_type_instance t
 			end
 		| TInst(c,[]) ->
 			self#write_byte 10;
@@ -154,12 +152,12 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_byte 32;
 			self#write_list16 args write_function_arg;
 		| TLazy r ->
-			self#write_type_instance' (lazy_type r);
+			self#write_type_instance (lazy_type r);
 		| TDynamic t ->
 			if t == t_dynamic then self#write_byte 40
 			else begin
 				self#write_byte 41;
-				self#write_type_instance' t;
+				self#write_type_instance t;
 			end
 		| TAnon an ->
 			begin match !(an.a_status) with
@@ -183,20 +181,6 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			| Const ->
 				()
 			end;
-
-	method write_type_instance t =
-		let bytes =
-			let ch = IO.output_bytes() in
-			let type_writer = new hxb_writer ch cp in
-			type_writer#write_type_instance' t;
-			IO.close_out ch
-		in
-		if bytes = last_type then
-			self#write_byte 0xFF
-		else begin
-			last_type <- bytes;
-			IO.nwrite ch bytes
-		end;
 
 	method write_types tl =
 		self#write_list16 tl self#write_type_instance
