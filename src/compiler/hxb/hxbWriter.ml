@@ -27,6 +27,44 @@ end
 let pmap_to_list map = PMap.foldi (fun k x l -> (k,x) :: l) map []
 let hashtbl_to_list h = Hashtbl.fold (fun k x l -> (k,x) :: l) h []
 
+let rec binop_index op = match op with
+	| OpAdd -> 0
+	| OpMult -> 1
+	| OpDiv -> 2
+	| OpSub -> 3
+	| OpAssign -> 4
+	| OpEq -> 5
+	| OpNotEq -> 6
+	| OpGt -> 7
+	| OpGte -> 8
+	| OpLt -> 9
+	| OpLte -> 10
+	| OpAnd -> 11
+	| OpOr -> 12
+	| OpXor -> 13
+	| OpBoolAnd -> 14
+	| OpBoolOr -> 15
+	| OpShl -> 16
+	| OpShr -> 17
+	| OpUShr -> 18
+	| OpMod -> 19
+	| OpInterval -> 20
+	| OpArrow -> 21
+	| OpIn -> 22
+	| OpAssignOp op -> 30 + binop_index op
+
+let unop_index op flag = match op,flag with
+	| Increment,Prefix -> 0
+	| Decrement,Prefix -> 1
+	| Not,Prefix -> 2
+	| Neg,Prefix -> 3
+	| NegBits,Prefix -> 4
+	| Increment,Postfix -> 5
+	| Decrement,Postfix -> 6
+	| Not,Postfix -> 7
+	| Neg,Postfix -> 8
+	| NegBits,Postfix -> 9
+
 class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = object(self)
 
 	(* basic *)
@@ -445,65 +483,12 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 				self#write_types tl;
 				loop_el el;
 			(* unops 140-159 *)
-			| TUnop(Increment,Prefix,e1) ->
-				self#write_byte 140;
-				loop e1;
-			| TUnop(Decrement,Prefix,e1) ->
-				self#write_byte 141;
-				loop e1;
-			| TUnop(Not,Prefix,e1) ->
-				self#write_byte 142;
-				loop e1;
-			| TUnop(Neg,Prefix,e1) ->
-				self#write_byte 143;
-				loop e1;
-			| TUnop(NegBits,Prefix,e1) ->
-				self#write_byte 144;
-				loop e1;
-			| TUnop(Increment,Postfix,e1) ->
-				self#write_byte 145;
-				loop e1;
-			| TUnop(Decrement,Postfix,e1) ->
-				self#write_byte 146;
-				loop e1;
-			| TUnop(Not,Postfix,e1) ->
-				self#write_byte 147;
-				loop e1;
-			| TUnop(Neg,Postfix,e1) ->
-				self#write_byte 148;
-				loop e1;
-			| TUnop(NegBits,Postfix,e1) ->
-				self#write_byte 149;
+			| TUnop(op,flag,e1) ->
+				self#write_byte (140 + unop_index op flag);
 				loop e1;
 			(* binops 160-219 *)
 			| TBinop(op,e1,e2) ->
-				let rec idx op = match op with
-					| OpAdd -> 0
-					| OpMult -> 1
-					| OpDiv -> 2
-					| OpSub -> 3
-					| OpAssign -> 4
-					| OpEq -> 5
-					| OpNotEq -> 6
-					| OpGt -> 7
-					| OpGte -> 8
-					| OpLt -> 9
-					| OpLte -> 10
-					| OpAnd -> 11
-					| OpOr -> 12
-					| OpXor -> 13
-					| OpBoolAnd -> 14
-					| OpBoolOr -> 15
-					| OpShl -> 16
-					| OpShr -> 17
-					| OpUShr -> 18
-					| OpMod -> 19
-					| OpInterval -> 20
-					| OpArrow -> 21
-					| OpIn -> 22
-					| OpAssignOp op -> 30 + idx op
-				in
-				self#write_byte (160 + idx op);
+				self#write_byte (160 + binop_index op);
 				loop e1;
 				loop e2;
 			(* rest 250-254 *)
@@ -570,6 +555,16 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		(* TODO: expr_unoptimized *)
 		self#write_list16 cf.cf_overloads self#write_class_field;
 
+	method write_enum_field ef =
+		self#write_string ef.ef_name;
+		self#write_type_instance ef.ef_type;
+		self#write_pos ef.ef_pos;
+		self#write_pos ef.ef_name_pos;
+		self#write_option ef.ef_doc self#write_string;
+		self#write_i32 ef.ef_index;
+		self#write_type_params ef.ef_params;
+		self#write_metadata ef.ef_meta;
+
 	(* module *)
 
 	method write_class_kind = function
@@ -629,9 +624,42 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_option c.cl_constructor self#write_class_field;
 			self#write_option c.cl_init self#write_texpr;
 			self#write_list16 c.cl_overrides (fun cf -> self#write_string cf.cf_name);
-		| _ ->
+		| TEnumDecl en ->
 			self#write_byte 1;
-			(* TODO *)
+			self#write_module_type (TTypeDecl en.e_type);
+			self#write_bool en.e_extern;
+			self#write_list16 en.e_names (fun s ->
+				let ef = PMap.find s en.e_constrs in
+				self#write_enum_field ef;
+			);
+		| TTypeDecl td ->
+			self#write_byte 2;
+			self#write_type_instance td.t_type;
+		| TAbstractDecl a ->
+			self#write_byte 3;
+			self#write_list16 a.a_ops (fun (op,cf) ->
+				self#write_byte (binop_index op);
+				self#write_string cf.cf_name
+			);
+			self#write_list16 a.a_unops (fun (op,flag,cf) ->
+				self#write_byte (unop_index op flag);
+				self#write_string cf.cf_name;
+			);
+			self#write_option a.a_impl (fun c -> self#write_path c.cl_path);
+			self#write_type_instance a.a_this;
+			self#write_types a.a_from;
+			self#write_list16 a.a_from_field (fun (t,cf) ->
+				self#write_type_instance t;
+				self#write_string cf.cf_name
+			);
+			self#write_types a.a_to;
+			self#write_list16 a.a_to_field (fun (t,cf) ->
+				self#write_type_instance t;
+				self#write_string cf.cf_name
+			);
+			self#write_list16 a.a_array (fun cf -> self#write_string cf.cf_name);
+			self#write_option a.a_read (fun cf -> self#write_string cf.cf_name);
+			self#write_option a.a_write (fun cf -> self#write_string cf.cf_name);
 
 	method write_module m =
 		self#write_i32 m.m_id;
