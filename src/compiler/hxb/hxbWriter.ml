@@ -187,11 +187,26 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 
 	(* texpr *)
 
+	method write_var_kind vk =
+		let b = match vk with
+			| VUser TVOLocalVariable -> 0
+			| VUser TVOArgument -> 1
+			| VUser TVOForVariable -> 2
+			| VUser TVOPatternVariable -> 3
+			| VUser TVOCatchVariable -> 4
+			| VUser TVOLocalFunction -> 5
+			| VGenerated -> 6
+			| VInlined -> 7
+			| VInlinedConstructorVariable -> 8
+			| VExtractorVariable -> 9
+		in
+		self#write_byte b
+
 	method write_var v =
 		self#write_i32 v.v_id;
 		self#write_string v.v_name;
 		self#write_type_instance v.v_type;
-		(* TODO: kind *)
+		self#write_var_kind v.v_kind;
 		self#write_bool v.v_capture;
 		self#write_bool v.v_final;
 		self#write_option v.v_extra (fun (tl,eo) ->
