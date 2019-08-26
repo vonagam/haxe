@@ -315,7 +315,10 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 				self#write_list16 fl (fun ((name,p,qs),e) ->
 					self#write_string name;
 					self#write_pos p;
-					(* TODO: qs *)
+					begin match qs with
+					| NoQuotes -> self#write_byte 0;
+					| DoubleQuotes -> self#write_byte 1;
+					end;
 					loop e
 				);
 			| TCall(e1,el) ->
@@ -380,7 +383,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			| TEnumParameter(e1,ef,i) ->
 				self#write_byte 101;
 				loop e1;
-				self#write_string ef.ef_name; (* TODO: not sure what to do with this... *)
+				self#write_string ef.ef_name;
 				self#write_i32 i;
 			| TField(e1,FInstance(c,tl,cf)) ->
 				self#write_byte 102;
@@ -555,6 +558,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 
 	method write_class_field cf =
 		self#write_string cf.cf_name;
+		self#write_i32 cf.cf_flags;
 		self#write_type_instance cf.cf_type;
 		self#write_pos cf.cf_pos;
 		self#write_pos cf.cf_name_pos;
@@ -565,7 +569,6 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_option cf.cf_expr self#write_texpr;
 		(* TODO: expr_unoptimized *)
 		self#write_list16 cf.cf_overloads self#write_class_field;
-		(* self#write_i32 cf.cf_flags *)
 
 	(* module *)
 
