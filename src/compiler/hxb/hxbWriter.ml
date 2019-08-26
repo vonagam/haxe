@@ -137,6 +137,26 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 				assert false
 		)
 
+	(* refs *)
+
+	method write_class_ref c =
+		self#write_path c.cl_path
+
+	method write_enum_ref en =
+		self#write_path en.e_path
+
+	method write_typedef_ref td =
+		self#write_path td.t_path
+
+	method write_abstract_ref a =
+		self#write_path a.a_path
+
+	method write_field_ref cf =
+		self#write_string cf.cf_name
+
+	method write_enum_field_ref ef =
+		self#write_string ef.ef_name
+
 	(* type instance *)
 
 	method write_type_instance t =
@@ -155,31 +175,31 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			end
 		| TInst(c,[]) ->
 			self#write_byte 10;
-			self#write_path c.cl_path
+			self#write_class_ref c;
 		| TEnum(en,[]) ->
 			self#write_byte 11;
-			self#write_path en.e_path
+			self#write_enum_ref en;
 		| TType(td,[]) ->
 			self#write_byte 12;
-			self#write_path td.t_path
+			self#write_typedef_ref td;
 		| TAbstract(a,[]) ->
 			self#write_byte 13;
-			self#write_path a.a_path
+			self#write_abstract_ref a;
 		| TInst(c,tl) ->
 			self#write_byte 14;
-			self#write_path c.cl_path;
+			self#write_class_ref c;
 			self#write_types tl
 		| TEnum(en,tl) ->
 			self#write_byte 15;
-			self#write_path en.e_path;
+			self#write_enum_ref en;
 			self#write_types tl
 		| TType(td,tl) ->
 			self#write_byte 16;
-			self#write_path td.t_path;
+			self#write_typedef_ref td;
 			self#write_types tl
 		| TAbstract(a,tl) ->
 			self#write_byte 17;
-			self#write_path a.a_path;
+			self#write_abstract_ref a;
 			self#write_types tl
 		| TFun([],t) when ExtType.is_void (follow t) ->
 			self#write_byte 30;
@@ -211,9 +231,9 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_list16 l (fun (_,cf) -> self#write_class_field cf);
 			begin match !(an.a_status) with
 			| Extend tl -> self#write_types tl
-			| Statics c -> self#write_path c.cl_path
-			| EnumStatics en -> self#write_path en.e_path
-			| AbstractStatics a -> self#write_path a.a_path
+			| Statics c -> self#write_class_ref c
+			| EnumStatics en -> self#write_enum_ref en
+			| AbstractStatics a -> self#write_abstract_ref a
 			| Closed
 			| Opened
 			| Const ->
@@ -421,38 +441,38 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			| TEnumParameter(e1,ef,i) ->
 				self#write_byte 101;
 				loop e1;
-				self#write_string ef.ef_name;
+				self#write_enum_field_ref ef;
 				self#write_i32 i;
 			| TField(e1,FInstance(c,tl,cf)) ->
 				self#write_byte 102;
 				loop e1;
-				self#write_path c.cl_path;
+				self#write_class_ref c;
 				self#write_types tl;
-				self#write_string cf.cf_name;
+				self#write_field_ref cf;
 			| TField(e1,FStatic(c,cf)) ->
 				self#write_byte 103;
 				loop e1;
-				self#write_path c.cl_path;
-				self#write_string cf.cf_name;
+				self#write_class_ref c;
+				self#write_field_ref cf;
 			| TField(e1,FAnon cf) ->
 				self#write_byte 104;
 				loop e1;
-				self#write_string cf.cf_name;
+				self#write_field_ref cf;
 			| TField(e1,FClosure(Some(c,tl),cf)) ->
 				self#write_byte 105;
 				loop e1;
-				self#write_path c.cl_path;
+				self#write_class_ref c;
 				self#write_types tl;
-				self#write_string cf.cf_name;
+				self#write_field_ref cf;
 			| TField(e1,FClosure(None,cf)) ->
 				self#write_byte 106;
 				loop e1;
-				self#write_string cf.cf_name;
+				self#write_field_ref cf;
 			| TField(e1,FEnum(en,ef)) ->
 				self#write_byte 107;
 				loop e1;
-				self#write_path en.e_path;
-				self#write_string ef.ef_name;
+				self#write_enum_ref en;
+				self#write_enum_field_ref ef;
 			| TField(e1,FDynamic s) ->
 				self#write_byte 108;
 				loop e1;
@@ -460,16 +480,16 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			(* module types 120-139 *)
 			| TTypeExpr (TClassDecl c) ->
 				self#write_byte 120;
-				self#write_path c.cl_path;
+				self#write_class_ref c;
 			| TTypeExpr (TEnumDecl en) ->
 				self#write_byte 121;
-				self#write_path en.e_path;
+				self#write_enum_ref en;
 			| TTypeExpr (TAbstractDecl a) ->
 				self#write_byte 122;
-				self#write_path a.a_path
+				self#write_abstract_ref a
 			| TTypeExpr (TTypeDecl td) ->
 				self#write_byte 123;
-				self#write_path td.t_path
+				self#write_typedef_ref td
 			| TCast(e1,None) ->
 				self#write_byte 124;
 				loop e1;
@@ -479,7 +499,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 				self#write_path (t_infos md).mt_path
 			| TNew(c,tl,el) ->
 				self#write_byte 126;
-				self#write_path c.cl_path;
+				self#write_class_ref c;
 				self#write_types tl;
 				loop_el el;
 			(* unops 140-159 *)
@@ -542,7 +562,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			f w;
 
 	method write_class_field cf =
-		self#write_string cf.cf_name;
+		self#write_field_ref cf;
 		self#write_i32 cf.cf_flags;
 		self#write_type_instance cf.cf_type;
 		self#write_pos cf.cf_pos;
@@ -556,7 +576,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_list16 cf.cf_overloads self#write_class_field;
 
 	method write_enum_field ef =
-		self#write_string ef.ef_name;
+		self#write_enum_field_ref ef;
 		self#write_type_instance ef.ef_type;
 		self#write_pos ef.ef_pos;
 		self#write_pos ef.ef_name_pos;
@@ -580,7 +600,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_byte 3;
 		| KGenericInstance(c,tl) ->
 			self#write_byte 4;
-			self#write_path c.cl_path;
+			self#write_class_ref c;
 			self#write_types tl
 		| KMacroType ->
 			self#write_byte 5;
@@ -589,7 +609,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			(* TODO *)
 		| KAbstractImpl a ->
 			self#write_byte 7;
-			self#write_path a.a_path
+			self#write_abstract_ref a;
 
 	method write_module_type mt =
 		let infos = t_infos mt in
@@ -601,7 +621,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_metadata infos.mt_meta;
 		self#write_type_params infos.mt_params;
 		self#write_list8 infos.mt_using (fun (c,p) ->
-			self#write_path c.cl_path;
+			self#write_class_ref c;
 			self#write_pos p;
 		);
 		match mt with
@@ -612,7 +632,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_bool c.cl_final;
 			self#write_bool c.cl_interface;
 			let write_relation (cr,tl) =
-				self#write_path cr.cl_path;
+				self#write_class_ref cr;
 				self#write_types tl;
 			in
 			self#write_option c.cl_super write_relation;
@@ -623,7 +643,7 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_option c.cl_array_access self#write_type_instance;
 			self#write_option c.cl_constructor self#write_class_field;
 			self#write_option c.cl_init self#write_texpr;
-			self#write_list16 c.cl_overrides (fun cf -> self#write_string cf.cf_name);
+			self#write_list16 c.cl_overrides self#write_field_ref;
 		| TEnumDecl en ->
 			self#write_byte 1;
 			self#write_module_type (TTypeDecl en.e_type);
@@ -639,27 +659,27 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			self#write_byte 3;
 			self#write_list16 a.a_ops (fun (op,cf) ->
 				self#write_byte (binop_index op);
-				self#write_string cf.cf_name
+				self#write_field_ref cf
 			);
 			self#write_list16 a.a_unops (fun (op,flag,cf) ->
 				self#write_byte (unop_index op flag);
-				self#write_string cf.cf_name;
+				self#write_field_ref cf;
 			);
-			self#write_option a.a_impl (fun c -> self#write_path c.cl_path);
+			self#write_option a.a_impl self#write_class_ref;
 			self#write_type_instance a.a_this;
 			self#write_types a.a_from;
 			self#write_list16 a.a_from_field (fun (t,cf) ->
 				self#write_type_instance t;
-				self#write_string cf.cf_name
+				self#write_field_ref cf
 			);
 			self#write_types a.a_to;
 			self#write_list16 a.a_to_field (fun (t,cf) ->
 				self#write_type_instance t;
-				self#write_string cf.cf_name
+				self#write_field_ref cf
 			);
-			self#write_list16 a.a_array (fun cf -> self#write_string cf.cf_name);
-			self#write_option a.a_read (fun cf -> self#write_string cf.cf_name);
-			self#write_option a.a_write (fun cf -> self#write_string cf.cf_name);
+			self#write_list16 a.a_array self#write_field_ref;
+			self#write_option a.a_read self#write_field_ref;
+			self#write_option a.a_write self#write_field_ref;
 
 	method write_module m =
 		self#write_i32 m.m_id;
@@ -693,8 +713,8 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		);
 		self#write_list16 extra.m_if_feature (fun (s,(c,cf,b)) ->
 			self#write_string s;
-			self#write_path c.cl_path;
-			self#write_string cf.cf_name;
+			self#write_class_ref c;
+			self#write_field_ref cf;
 			self#write_bool b;
 		);
 		self#write_list16 (hashtbl_to_list extra.m_features) (fun (s,b) ->
