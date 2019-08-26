@@ -24,6 +24,9 @@ class hxb_constant_pool_writer = object(self)
 		) pool;
 end
 
+let pmap_to_list map = PMap.foldi (fun k x l -> (k,x) :: l) map []
+let hashtbl_to_list h = Hashtbl.fold (fun k x l -> (k,x) :: l) h []
+
 class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = object(self)
 
 	(* basic *)
@@ -43,8 +46,15 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 	method write_i32 i =
 		IO.write_real_i32 ch (Int32.of_int i);
 
+	method write_float f =
+		IO.write_double ch f
+
 	method write_string s =
 		self#write_i32 (cp#get_index s);
+
+	method write_bytes b =
+		self#write_i32 (Bytes.length b);
+		IO.nwrite ch b;
 
 	method write_list8 : 'b . 'b list -> ('b -> unit) -> unit = fun l f ->
 		self#write_byte (List.length l);
@@ -161,8 +171,8 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 			| EnumStatics _ -> self#write_byte 55
 			| AbstractStatics _ -> self#write_byte 56
 			end;
-			let l = PMap.fold (fun cf l -> cf :: l) an.a_fields [] in
-			self#write_list16 l self#write_class_field;
+			let l = pmap_to_list an.a_fields in
+			self#write_list16 l (fun (_,cf) -> self#write_class_field cf);
 			begin match !(an.a_status) with
 			| Extend tl -> self#write_types tl
 			| Statics c -> self#write_path c.cl_path
@@ -625,5 +635,40 @@ class ['a] hxb_writer (ch : 'a IO.output) (cp : hxb_constant_pool_writer) = obje
 		self#write_i32 m.m_id;
 		self#write_path m.m_path;
 		self#write_list16 m.m_types self#write_module_type;
-		(* TODO: m_extra *)
+		let extra = m.m_extra in
+		self#write_string extra.m_file;
+		self#write_string (Digest.to_hex extra.m_sign);
+		self#write_list16 extra.m_display.m_inline_calls (fun (p1,p2) ->
+			self#write_pos p1;
+			self#write_pos p2;
+		);
+		self#write_list16 extra.m_display.m_type_hints (fun (p,t) ->
+			self#write_pos p;
+			self#write_type_instance t;
+		);
+		self#write_list8 extra.m_check_policy (fun pol -> self#write_byte (Obj.magic pol)); (* TODO: don't be lazy *)
+		self#write_float extra.m_time;
+		self#write_option extra.m_dirty (fun m -> self#write_path m.m_path);
+		self#write_i32 extra.m_added;
+		self#write_i32 extra.m_mark;
+		self#write_list16 (pmap_to_list extra.m_deps) (fun (i,m) ->
+			self#write_i32 i;
+			self#write_path m.m_path;
+		);
+		self#write_i32 extra.m_processed;
+		self#write_byte (Obj.magic extra.m_kind); (* TODO: don't be lazy *)
+		self#write_list16 (pmap_to_list extra.m_binded_res) (fun (s1,s2) ->
+			self#write_string s1;
+			self#write_bytes (Bytes.unsafe_of_string s2);
+		);
+		self#write_list16 extra.m_if_feature (fun (s,(c,cf,b)) ->
+			self#write_string s;
+			self#write_path c.cl_path;
+			self#write_string cf.cf_name;
+			self#write_bool b;
+		);
+		self#write_list16 (hashtbl_to_list extra.m_features) (fun (s,b) ->
+			self#write_string s;
+			self#write_bool b;
+		);
 end
