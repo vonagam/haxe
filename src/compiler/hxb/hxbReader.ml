@@ -63,9 +63,9 @@ class hxb_reader
 		IO.really_nread ch len
 
 	method read_str () =
-		Bytes.to_string (self#read_str_raw (self#read_uleb128 ()))
+		Bytes.unsafe_to_string (self#read_str_raw (self#read_uleb128 ()))
 
-	method read_arr : 'b . (unit -> 'b) -> 'b list = fun f ->
+	method read_list : 'b . (unit -> 'b) -> 'b list = fun f ->
 		let rec read n =
 			if n = 0 then
 				[]
@@ -73,6 +73,9 @@ class hxb_reader
 				(f ()) :: (read (n - 1))
 		in
 		List.rev (read (self#read_uleb128 ()))
+
+	method read_arr : 'b . (unit -> 'b) -> 'b array = fun f ->
+		Array.init (self#read_uleb128 ()) (fun _ -> f ())
 
 	method read_bool () =
 		(self#read_u8 ()) <> 0
@@ -128,19 +131,19 @@ class hxb_reader
 			{pfile = last_file; pmin; pmax}
 
 	method read_path () =
-		let t1 = self#read_arr self#read_pstr in
+		let t1 = self#read_list self#read_pstr in
 		let t2 = self#read_pstr () in
 		t1, t2
 
 	method read_pstr () =
-		List.nth (Option.get last_string_pool).data (self#read_uleb128 ())
+		(Option.get last_string_pool).data.(self#read_uleb128 ())
 
 	(* TODO: refactor the read_*_ref functions into one + 4 tiny ones? *)
 	method read_class_ref () =
 		let type_list = (Option.get last_type_list) in
 		let index = self#read_uleb128 () in
-		if index < (List.length type_list.external_classes) then
-			match (resolve_type (List.nth type_list.external_classes index)) with
+		if index < (Array.length type_list.external_classes) then
+			match (resolve_type type_list.external_classes.(index)) with
 				| TClassDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
 		else
@@ -149,8 +152,8 @@ class hxb_reader
 	method read_enum_ref () =
 		let type_list = (Option.get last_type_list) in
 		let index = self#read_uleb128 () in
-		if index < (List.length type_list.external_enums) then
-			match (resolve_type (List.nth type_list.external_enums index)) with
+		if index < (Array.length type_list.external_enums) then
+			match (resolve_type type_list.external_enums.(index)) with
 				| TEnumDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
 		else
@@ -159,8 +162,8 @@ class hxb_reader
 	method read_abstract_ref () =
 		let type_list = (Option.get last_type_list) in
 		let index = self#read_uleb128 () in
-		if index < (List.length type_list.external_abstracts) then
-			match (resolve_type (List.nth type_list.external_abstracts index)) with
+		if index < (Array.length type_list.external_abstracts) then
+			match (resolve_type type_list.external_abstracts.(index)) with
 				| TAbstractDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
 		else
@@ -169,8 +172,8 @@ class hxb_reader
 	method read_typedef_ref () =
 		let type_list = (Option.get last_type_list) in
 		let index = self#read_uleb128 () in
-		if index < (List.length type_list.external_typedefs) then
-			match (resolve_type (List.nth type_list.external_typedefs index)) with
+		if index < (Array.length type_list.external_typedefs) then
+			match (resolve_type type_list.external_typedefs.(index)) with
 				| TTypeDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
 		else
@@ -198,9 +201,9 @@ class hxb_reader
 		| _ -> raise (HxbReadFailure "read_constant"))
 
 	method read_type_path () =
-		let tpackage = self#read_arr self#read_pstr in
+		let tpackage = self#read_list self#read_pstr in
 		let tname = self#read_pstr () in
-		let tparams = self#read_arr self#read_type_param in
+		let tparams = self#read_list self#read_type_param in
 		let tsub = self#read_nullable self#read_pstr in
 		{tpackage; tname; tparams; tsub}
 
@@ -216,16 +219,18 @@ class hxb_reader
 	method read_complex_type () = self#read_enum (function
 		| 0 -> CTPath (self#read_type_path ())
 		| 1 ->
-			let t1 = self#read_arr self#read_type_hint in
+			let t1 = self#read_list self#read_type_hint in
 			CTFunction (t1, self#read_type_hint ())
-		(*| 2 -> CTAnonymous (self#read_arr self#read_field)*)
+		| 2 -> CTAnonymous (self#read_list self#read_field)
 		| 3 -> CTParent (self#read_type_hint ())
-		(*| 4 -> CTExtend (self#read_placed_type_path (), self#read_arr self#read_field)*)
+		| 4 ->
+			let t1 = self#read_list self#read_placed_type_path in
+			CTExtend (t1, self#read_list self#read_field)
 		| 5 -> CTOptional (self#read_type_hint ())
 		| 6 ->
 			let t1 = self#read_placed_name () in
 			CTNamed (t1, self#read_type_hint ())
-		| 7 -> CTIntersection (self#read_arr self#read_type_hint)
+		| 7 -> CTIntersection (self#read_list self#read_type_hint)
 		| _ -> raise (HxbReadFailure "read_complex_type"))
 
 	method read_type_hint () =
@@ -233,8 +238,8 @@ class hxb_reader
 		t1, (self#read_pos ())
 
 	method read_function () =
-		let f_params = self#read_arr self#read_type_param_decl in
-		let f_args = self#read_arr self#read_function_arg in
+		let f_params = self#read_list self#read_type_param_decl in
+		let f_args = self#read_list self#read_function_arg in
 		let f_type = self#read_nullable self#read_type_hint in
 		let f_expr = self#read_nullable self#read_expr in
 		{f_params; f_args; f_type; f_expr}
@@ -242,7 +247,7 @@ class hxb_reader
 	method read_function_arg () =
 		let t1 = self#read_placed_name () in
 		let t2 = self#read_bool () in
-		let t3 = self#read_arr self#read_metadata_entry in
+		let t3 = self#read_list self#read_metadata_entry in
 		let t4 = self#read_nullable self#read_type_hint in
 		t1, t2, t3, t4, (self#read_nullable self#read_expr)
 
@@ -263,25 +268,25 @@ class hxb_reader
 			let t1 = self#read_expr () in
 			EField (t1, self#read_pstr ())
 		| 4 -> EParenthesis (self#read_expr ())
-		| 5 -> EObjectDecl (self#read_arr self#read_object_field)
-		| 6 -> EArrayDecl (self#read_arr self#read_expr)
+		| 5 -> EObjectDecl (self#read_list self#read_object_field)
+		| 6 -> EArrayDecl (self#read_list self#read_expr)
 		| 7 ->
 			let t1 = self#read_expr () in
-			ECall (t1, self#read_arr self#read_expr)
+			ECall (t1, self#read_list self#read_expr)
 		| 8 ->
 			let t1 = self#read_placed_type_path () in
-			ENew (t1, self#read_arr self#read_expr)
+			ENew (t1, self#read_list self#read_expr)
 		| 9 ->
 			let op, flag = self#read_unop () in
 			EUnop (op, flag, self#read_expr ())
-		| 10 -> EVars (self#read_arr self#read_var)
+		| 10 -> EVars (self#read_list self#read_var)
 		| 11 -> EFunction (FKAnonymous, self#read_function ())
 		| 12 ->
 			let t1 = self#read_placed_name () in
 			let t2 = self#read_bool () in
 			EFunction (FKNamed (t1, t2), self#read_function ())
 		| 13 -> EFunction (FKArrow, self#read_function ())
-		| 14 -> EBlock (self#read_arr self#read_expr)
+		| 14 -> EBlock (self#read_list self#read_expr)
 		| 15 ->
 			let t1 = self#read_expr () in
 			EFor (t1, self#read_expr ())
@@ -300,14 +305,14 @@ class hxb_reader
 			EWhile (t1, self#read_expr (), DoWhile)
 		| 20 ->
 			let t1 = self#read_expr () in
-			ESwitch (t1, self#read_arr self#read_case, None)
+			ESwitch (t1, self#read_list self#read_case, None)
 		| 21 ->
 			let t1 = self#read_expr () in
-			let t2 = self#read_arr self#read_case in
+			let t2 = self#read_list self#read_case in
 			ESwitch (t1, t2, Some (None, self#read_pos ()))
 		| 22 ->
 			let e = self#read_expr () in
-			let cases = self#read_arr self#read_case in
+			let cases = self#read_list self#read_case in
 			let edef = self#read_expr () in
 			ESwitch (e, cases, Some ((Some edef), snd edef))
 		| 23 ->
@@ -315,7 +320,7 @@ class hxb_reader
 			ETry (t1, [self#read_catch ()])
 		| 24 ->
 			let t1 = self#read_expr () in
-			ETry (t1, self#read_arr self#read_catch)
+			ETry (t1, self#read_list self#read_catch)
 		| 25 -> EReturn None
 		| 26 -> EReturn (Some (self#read_expr ()))
 		| 27 -> EBreak
@@ -340,7 +345,9 @@ class hxb_reader
 		| 41 ->
 			let t1 = self#read_expr () in
 			ECheckType (t1, self#read_type_hint ())
-
+		| 42 ->
+			let t1 = self#read_metadata_entry () in
+			EMeta (t1, self#read_expr ())
 		| _ -> raise (HxbReadFailure "read_expr_def"))
 
 	method read_object_field () =
@@ -356,7 +363,7 @@ class hxb_reader
 		t1, t2, t3, (self#read_nullable self#read_expr)
 
 	method read_case () =
-		let t1 = self#read_arr self#read_expr in
+		let t1 = self#read_list self#read_expr in
 		let t2 = self#read_nullable self#read_expr in
 		let t3 = self#read_nullable self#read_expr in
 		t1, t2, t3, (self#read_pos ())
@@ -373,21 +380,21 @@ class hxb_reader
 
 	method read_type_param_decl () =
 		let tp_name = self#read_placed_name () in
-		let tp_params = self#read_arr self#read_type_param_decl in
+		let tp_params = self#read_list self#read_type_param_decl in
 		let tp_constraints = self#read_nullable self#read_type_hint in
-		let tp_meta = self#read_arr self#read_metadata_entry in
+		let tp_meta = self#read_list self#read_metadata_entry in
 		{tp_name; tp_params; tp_constraints; tp_meta}
 
 	method read_doc () =
 		let index = self#read_uleb128 () in
-		if index = 0 then
+		if (index = 0) || (last_doc_pool = None) then
 			None
 		else
-			Some (List.nth (Option.get last_doc_pool).data (index - 1))
+			Some ((Option.get last_doc_pool).data.(index - 1))
 
 	method read_metadata_entry () =
 		let t1 = Meta.from_string (self#read_pstr ()) in
-		let t2 = self#read_arr self#read_expr in
+		let t2 = self#read_list self#read_expr in
 		t1, t2, (self#read_pos ())
 
 	method read_placed_access () =
@@ -398,8 +405,8 @@ class hxb_reader
 		let cff_name = self#read_placed_name () in
 		let cff_doc = self#read_doc () in
 		let cff_pos = self#read_pos () in
-		let cff_meta = self#read_arr self#read_metadata_entry in
-		let cff_access = self#read_arr self#read_placed_access in
+		let cff_meta = self#read_list self#read_metadata_entry in
+		let cff_access = self#read_list self#read_placed_access in
 		let cff_kind = self#read_enum (function
 			| 0 ->
 				let t1 = self#read_nullable self#read_type_hint in
@@ -457,7 +464,7 @@ class hxb_reader
 		t1, t2, (self#read_type ())
 
 	method read_type_params () =
-		self#read_arr (fun () ->
+		self#read_list (fun () ->
 			let t1 = self#read_pstr () in
 			t1, (self#read_type ()))
 
@@ -483,12 +490,12 @@ class hxb_reader
 		let v_kind = self#read_enum HxbEnums.TVarKind.from_int in
 		let v_capture, v_final = self#read_bools2 () in
 		let v_extra = self#read_nullable self#read_tvar_extra in
-		let v_meta = self#read_arr self#read_metadata_entry in
+		let v_meta = self#read_list self#read_metadata_entry in
 		let v_pos = self#read_pos () in
 		{v_id; v_name; v_type; v_kind; v_capture; v_final; v_extra; v_meta; v_pos}
 
 	method read_tfunc () =
-		let tf_args = self#read_arr self#read_tfunc_arg in
+		let tf_args = self#read_list self#read_tfunc_arg in
 		let tf_type = self#read_type () in
 		let tf_expr = self#read_typed_expr () in
 		{tf_args; tf_type; tf_expr}
@@ -503,7 +510,7 @@ class hxb_reader
 			| 0 -> Closed
 			| 1 -> Opened
 			| 2 -> Const
-			| 3 -> Extend (self#read_arr self#read_type)
+			| 3 -> Extend (self#read_list self#read_type)
 
 			| _ -> raise (HxbReadFailure "read_anon_type")) in
 		{a_fields; a_status}
@@ -519,22 +526,29 @@ class hxb_reader
 			let t2 = self#read_typed_expr () in
 			TBinop (t1, t2, self#read_typed_expr ())
 
+		| 11 -> TTypeExpr (TClassDecl (self#read_class_ref ()))
+		| 12 -> TTypeExpr (TEnumDecl (self#read_enum_ref ()))
+		| 13 -> TTypeExpr (TTypeDecl (self#read_typedef_ref ()))
+		| 14 -> TTypeExpr (TAbstractDecl (self#read_abstract_ref ()))
 		| 15 -> TParenthesis (self#read_typed_expr ())
-		| 16 -> TObjectDecl (self#read_arr self#read_tobject_field)
-		| 17 -> TArrayDecl (self#read_arr self#read_typed_expr)
+		| 16 -> TObjectDecl (self#read_list self#read_tobject_field)
+		| 17 -> TArrayDecl (self#read_list self#read_typed_expr)
 		| 18 ->
 			let t1 = self#read_typed_expr () in
-			TCall (t1, self#read_arr self#read_typed_expr)
-
+			TCall (t1, self#read_list self#read_typed_expr)
+		| 19 ->
+			let t1 = self#read_class_ref () in
+			let t2 = self#read_list self#read_type in
+			TNew (t1, t2, self#read_list self#read_typed_expr)
 		| 20 ->
 			let op, flag = self#read_unop () in
 			TUnop (op, flag, self#read_typed_expr ())
-
+		| 21 -> TFunction (self#read_tfunc ())
 		| 22 -> TVar (self#read_tvar (), None)
 		| 23 ->
 			let t1 = self#read_tvar () in
 			TVar (t1, Some (self#read_typed_expr ()))
-		| 24 -> TBlock (self#read_arr self#read_typed_expr)
+		| 24 -> TBlock (self#read_list self#read_typed_expr)
 		| 25 ->
 			let t1 = self#read_tvar () in
 			let t2 = self#read_typed_expr () in
@@ -554,24 +568,35 @@ class hxb_reader
 			TWhile (t1, self#read_typed_expr (), DoWhile)
 		| 30 ->
 			let t1 = self#read_typed_expr () in
-			TSwitch (t1, self#read_arr self#read_tcase, None)
+			TSwitch (t1, self#read_list self#read_tcase, None)
 		| 31 ->
 			let t1 = self#read_typed_expr () in
-			let t2 = self#read_arr self#read_tcase in
+			let t2 = self#read_list self#read_tcase in
 			TSwitch (t1, t2, Some (self#read_typed_expr ()))
 		| 32 ->
 			let t1 = self#read_typed_expr () in
 			TTry (t1, [self#read_tcatch ()])
 		| 33 ->
 			let t1 = self#read_typed_expr () in
-			TTry (t1, self#read_arr self#read_tcatch)
+			TTry (t1, self#read_list self#read_tcatch)
 		| 34 -> TReturn None
 		| 35 -> TReturn (Some (self#read_typed_expr ()))
 		| 36 -> TBreak
 		| 37 -> TContinue
 		| 38 -> TThrow (self#read_typed_expr ())
 		| 39 -> TCast (self#read_typed_expr (), None)
-
+		| 40 ->
+			let t1 = self#read_typed_expr () in
+			TCast (t1, Some (TClassDecl (self#read_class_ref ())))
+		| 41 ->
+			let t1 = self#read_typed_expr () in
+			TCast (t1, Some (TEnumDecl (self#read_enum_ref ())))
+		| 42 ->
+			let t1 = self#read_typed_expr () in
+			TCast (t1, Some (TTypeDecl (self#read_typedef_ref ())))
+		| 43 ->
+			let t1 = self#read_typed_expr () in
+			TCast (t1, Some (TAbstractDecl (self#read_abstract_ref ())))
 		| 44 ->
 			let t1 = self#read_metadata_entry () in
 			TMeta (t1, self#read_typed_expr ())
@@ -587,7 +612,7 @@ class hxb_reader
 		(t1, t2, t3), (self#read_typed_expr ())
 
 	method read_tcase () =
-		let t1 = self#read_arr self#read_typed_expr in
+		let t1 = self#read_list self#read_typed_expr in
 		t1, (self#read_typed_expr ())
 
 	method read_tcatch () =
@@ -607,14 +632,14 @@ class hxb_reader
 		let mt_name_pos = self#read_pos () in
 		let mt_private = self#read_bool () in
 		let mt_doc = self#read_doc () in
-		let mt_meta = self#read_arr self#read_metadata_entry in
+		let mt_meta = self#read_list self#read_metadata_entry in
 		let mt_params = self#read_type_params () in
-		let mt_using = [] in (*self#read_arr self#read_class_using in*)
+		let mt_using = self#read_list self#read_class_using in
 		{mt_module; mt_path; mt_pos; mt_name_pos; mt_private; mt_doc; mt_meta; mt_params; mt_using}
 
-	(*method read_class_using () = self#read_tuple2
-		(self#read_class_ref ())
-		(self#read_pos ())*)
+	method read_class_using () =
+		let t1 = self#read_class_ref () in
+		t1, (self#read_pos ())
 
 	method stub_module () = raise (Failure "not implemented")
 
@@ -624,7 +649,7 @@ class hxb_reader
 		let cf_pos = self#read_pos () in
 		let cf_name_pos = self#read_pos () in
 		let cf_doc = self#read_doc () in
-		let cf_meta = self#read_arr self#read_metadata_entry in
+		let cf_meta = self#read_list self#read_metadata_entry in
 		let cf_kind = self#read_enum (function
 			| 0 -> Method(MethNormal)
 			| 1 -> Method(MethInline)
@@ -668,7 +693,7 @@ class hxb_reader
 		let base = self#read_base_type () in
 		let cl_kind = self#read_enum (function
 			| 0 -> KNormal
-			| 1 -> KTypeParameter (self#read_arr self#read_type)
+			| 1 -> KTypeParameter (self#read_list self#read_type)
 			| 2 -> KExpr (self#read_expr ())
 			| 3 -> KGeneric
 
@@ -684,7 +709,7 @@ class hxb_reader
 		let ef_name_pos = self#read_pos () in
 		let ef_doc = self#read_doc () in
 		let ef_params = self#read_type_params () in
-		let ef_meta = self#read_arr self#read_metadata_entry in
+		let ef_meta = self#read_list self#read_metadata_entry in
 		{ef_name; ef_type; ef_pos; ef_name_pos; ef_doc; ef_index; ef_params; ef_meta}
 
 	(* File structure *)
@@ -722,10 +747,10 @@ class hxb_reader
 
 	method read_field_list () =
 		let type_list = Option.get last_type_list in
-		let read1 = List.map (fun _ -> self#read_arr self#read_str) in
-		let read2 = List.map (fun _ -> self#read_arr self#read_str) in
-		let class_fields = (read1 type_list.external_classes) @ (read2 type_list.internal_classes) in
-		let enum_fields = (read1 type_list.external_enums) @ (read2 type_list.internal_enums) in
+		let read1 = Array.map (fun _ -> self#read_arr self#read_str) in
+		let read2 = Array.map (fun _ -> self#read_arr self#read_str) in
+		let class_fields = Array.append (read1 type_list.external_classes) (read2 type_list.internal_classes) in
+		let enum_fields = Array.append (read1 type_list.external_enums) (read2 type_list.internal_enums) in
 		{class_fields; enum_fields}
 
 	method read_type_declarations () =
@@ -742,7 +767,7 @@ class hxb_reader
 		last_header <- Some (self#read_header ());
 		let rec loop () =
 			let chunk_header = self#read_chunk_header () in
-			if (match chunk_header.chk_id with
+			(if (match chunk_header.chk_id with
 				| "HHDR" -> raise (HxbReadFailure "duplicate header")
 				| "HEND" -> false
 				| "STRI" -> last_string_pool <- Some (self#read_string_pool ()); true
@@ -753,7 +778,8 @@ class hxb_reader
 				| "xTRA" -> last_module_extra <- Some (self#read_module_extra ()); true
 				| _ -> raise (HxbReadFailure "unknown chunk") (* TODO: skip if ancillary *)) then
 				ignore (self#read_u32 ()); (* TODO: checksum verify *)
-				loop ()
-		in loop (); ()
+				loop ());
+			()
+		in loop ()
 
 end
