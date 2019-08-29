@@ -54,7 +54,7 @@ class hxb_reader
 				(b, acc, shift + 7)
 		in
 		let last, acc, shift = read 0 0 in
-		if (last land 0x40) != 0 then
+		if (last land 0x40) <> 0 then
 			acc lor ((lnot 0) lsl shift)
 		else
 			acc
@@ -75,7 +75,7 @@ class hxb_reader
 		List.rev (read (self#read_uleb128 ()))
 
 	method read_bool () =
-		(self#read_u8 ()) != 0
+		(self#read_u8 ()) <> 0
 
 	method read_bools n =
 		let b = self#read_u8 () in
@@ -83,7 +83,7 @@ class hxb_reader
 			if i = n then
 				[]
 			else
-				((b land (1 lsl i)) != 0) :: (read (i + 1))
+				((b land (1 lsl i)) <> 0) :: (read (i + 1))
 		in
 		read 0
 
@@ -104,7 +104,7 @@ class hxb_reader
 		f (self#read_u8 ())
 
 	method read_nullable : 'b . (unit -> 'b) -> 'b option = fun f ->
-		if (self#read_u8 ()) != 0 then
+		if (self#read_u8 ()) <> 0 then
 			Some (f ())
 		else
 			None
@@ -122,7 +122,7 @@ class hxb_reader
 		else
 			let pmin = self#read_delta () in
 			let pmax_flag = self#read_leb128 () in
-			let pmax, file_present = pmax_flag lsr 1, (pmax_flag land 1) != 0 in
+			let pmax, file_present = pmax_flag lsr 1, (pmax_flag land 1) <> 0 in
 			if file_present then
 				last_file <- self#read_pstr ();
 			{pfile = last_file; pmin; pmax}
