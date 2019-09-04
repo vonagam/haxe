@@ -8,9 +8,13 @@ open HxbEnums
 exception HxbReadFailure of string
 
 class hxb_reader
-	(ch : IO.input)
+	(file_ch : IO.input)
 	(resolve_type : path -> module_type)
 	= object(self)
+
+	val mutable ch : IO.input = file_ch
+
+	val mutable chunks : hxb_chunk list option = None
 
 	val mutable last_header : hxb_chunk_header option = None
 	val mutable last_string_pool : hxb_chunk_string_pool option = None
@@ -22,6 +26,11 @@ class hxb_reader
 
 	val mutable last_file = ""
 	val mutable last_delta = 0
+
+	val mutable built_classes : tclass array option = None
+	val mutable built_enums : tenum array option = None
+	val mutable built_abstracts : tabstract array option = None
+	val mutable built_typedefs : tdef array option = None
 
 	val mutable current_module : module_def option = None
 
@@ -65,14 +74,17 @@ class hxb_reader
 	method read_str () =
 		Bytes.unsafe_to_string (self#read_str_raw (self#read_uleb128 ()))
 
-	method read_list : 'b . (unit -> 'b) -> 'b list = fun f ->
+	method read_list_indexed : 'b . (int -> 'b) -> 'b list = fun f ->
 		let rec read n =
 			if n = 0 then
 				[]
 			else
-				(f ()) :: (read (n - 1))
+				(f n) :: (read (n - 1))
 		in
 		List.rev (read (self#read_uleb128 ()))
+
+	method read_list : 'b . (unit -> 'b) -> 'b list = fun f ->
+		self#read_list_indexed (fun _ -> f ())
 
 	method read_arr : 'b . (unit -> 'b) -> 'b array = fun f ->
 		Array.init (self#read_uleb128 ()) (fun _ -> f ())
@@ -138,48 +150,94 @@ class hxb_reader
 	method read_pstr () =
 		(Option.get last_string_pool).data.(self#read_uleb128 ())
 
-	(* TODO: refactor the read_*_ref functions into one + 4 tiny ones? *)
-	method read_class_ref () =
-		let type_list = (Option.get last_type_list) in
-		let index = self#read_uleb128 () in
+	method resolve_class index =
+		let type_list = Option.get last_type_list in
 		if index < (Array.length type_list.external_classes) then
 			match (resolve_type type_list.external_classes.(index)) with
 				| TClassDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
 		else
-			raise (Failure "n/a")
+			let built_classes = Option.get built_classes in
+			built_classes.(index - (Array.length type_list.external_classes))
 
-	method read_enum_ref () =
-		let type_list = (Option.get last_type_list) in
-		let index = self#read_uleb128 () in
+	method read_class_ref () =
+		self#resolve_class (self#read_uleb128 ())
+
+	method resolve_enum index =
+		let type_list = Option.get last_type_list in
 		if index < (Array.length type_list.external_enums) then
 			match (resolve_type type_list.external_enums.(index)) with
 				| TEnumDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
 		else
-			raise (Failure "n/a")
+			let built_enums = Option.get built_enums in
+			built_enums.(index - (Array.length type_list.external_enums))
 
-	method read_abstract_ref () =
-		let type_list = (Option.get last_type_list) in
-		let index = self#read_uleb128 () in
+	method read_enum_ref () =
+		self#resolve_enum (self#read_uleb128 ())
+
+	method resolve_abstract index =
+		let type_list = Option.get last_type_list in
 		if index < (Array.length type_list.external_abstracts) then
 			match (resolve_type type_list.external_abstracts.(index)) with
 				| TAbstractDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
 		else
-			raise (Failure "n/a")
+			let built_abstracts = Option.get built_abstracts in
+			built_abstracts.(index - (Array.length type_list.external_abstracts))
 
-	method read_typedef_ref () =
-		let type_list = (Option.get last_type_list) in
-		let index = self#read_uleb128 () in
+	method read_abstract_ref () =
+		self#resolve_abstract (self#read_uleb128 ())
+
+	method resolve_typedef index =
+		let type_list = Option.get last_type_list in
 		if index < (Array.length type_list.external_typedefs) then
 			match (resolve_type type_list.external_typedefs.(index)) with
 				| TTypeDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
 		else
-			raise (Failure "n/a")
+			let built_typedefs = Option.get built_typedefs in
+			built_typedefs.(index - (Array.length type_list.external_typedefs))
 
-	(* TODO: field refs *)
+	method read_typedef_ref () =
+		self#resolve_typedef (self#read_uleb128 ())
+
+	method read_class_field_ref () =
+		let index = self#read_uleb128 () in
+		let field_list = Option.get last_field_list in
+		let rec loop type_index index =
+			let len = Array.length field_list.class_fields.(type_index) in
+			if index >= len then
+				loop (type_index + 1) (index - len)
+			else
+				let field_name = field_list.class_fields.(type_index).(index) in
+				let resolved = self#resolve_class type_index in
+				if PMap.mem field_name resolved.cl_fields then
+					PMap.find field_name resolved.cl_fields
+				else
+					PMap.find field_name resolved.cl_statics
+		in
+		loop 0 index
+
+	method read_enum_field_ref () =
+		let index = self#read_uleb128 () in
+		let field_list = Option.get last_field_list in
+		let rec loop type_index index =
+			let len = Array.length field_list.enum_fields.(type_index) in
+			if index >= len then
+				loop (type_index + 1) (index - len)
+			else
+				let field_name = field_list.enum_fields.(type_index).(index) in
+				let resolved = self#resolve_enum type_index in
+				PMap.find field_name resolved.e_constrs
+		in
+		loop 0 index
+
+	method read_forward_type () =
+		let t1 = self#read_str () in
+		let t2 = self#read_pos () in
+		let t3 = self#read_pos () in
+		t1, t2, t3, (self#read_bool ())
 
 	(* Haxe, ast.ml *)
 
@@ -503,21 +561,23 @@ class hxb_reader
 	method read_tfunc_arg () =
 		let t1 = self#read_tvar () in
 		t1, (self#read_nullable self#read_typed_expr)
-		(*
+
 	method read_anon_type () =
-		let a_fields = [] in (* TODO *)
-		let a_status = self#read_enum (function
+		let a_fields = PMap.empty in (* TODO *)
+		let a_status = ref (self#read_enum (function
 			| 0 -> Closed
 			| 1 -> Opened
 			| 2 -> Const
 			| 3 -> Extend (self#read_list self#read_type)
-
-			| _ -> raise (HxbReadFailure "read_anon_type")) in
+			| 4 -> Statics (self#read_class_ref ())
+			| 5 -> EnumStatics (self#read_enum_ref ())
+			| 6 -> AbstractStatics (self#read_abstract_ref ())
+			| _ -> raise (HxbReadFailure "read_anon_type"))) in
 		{a_fields; a_status}
-*)
+
 	method read_typed_expr_def () = self#read_enum (function
 		| 0 -> TConst (self#read_tconstant ())
-
+		(* TODO: 1 -> TLocal *)
 		| 2 ->
 			let t1 = self#read_typed_expr () in
 			TArray (t1, self#read_typed_expr ())
@@ -525,7 +585,29 @@ class hxb_reader
 			let t1 = self#read_binop () in
 			let t2 = self#read_typed_expr () in
 			TBinop (t1, t2, self#read_typed_expr ())
-
+		| 4 ->
+			let t1 = self#read_typed_expr () in
+			let t2 = self#read_class_ref () in
+			let t3 = self#read_list self#read_type in
+			TField (t1, FInstance (t2, t3, self#read_class_field_ref ()))
+		| 5 ->
+			let t1 = self#read_typed_expr () in
+			let t2 = self#read_class_ref () in
+			TField (t1, FStatic (t2, self#read_class_field_ref ()))
+		(* TODO: 6 -> TField (e, FAnon (...)) *)
+		| 7 ->
+			let t1 = self#read_typed_expr () in
+			TField (t1, FDynamic (self#read_pstr ()))
+		(* TODO: 8 -> TField (e, FClosure (None, ...)) *)
+		| 9 ->
+			let t1 = self#read_typed_expr () in
+			let t2 = self#read_class_ref () in
+			let t3 = self#read_list self#read_type in
+			TField (t1, FClosure (Some (t2, t3), self#read_class_field_ref ()))
+		| 10 ->
+			let t1 = self#read_typed_expr () in
+			let t2 = self#read_enum_ref () in
+			TField (t1, FEnum (t2, self#read_enum_field_ref ()))
 		| 11 -> TTypeExpr (TClassDecl (self#read_class_ref ()))
 		| 12 -> TTypeExpr (TEnumDecl (self#read_enum_ref ()))
 		| 13 -> TTypeExpr (TTypeDecl (self#read_typedef_ref ()))
@@ -600,7 +682,10 @@ class hxb_reader
 		| 44 ->
 			let t1 = self#read_metadata_entry () in
 			TMeta (t1, self#read_typed_expr ())
-
+		| 45 ->
+			let t1 = self#read_typed_expr () in
+			let t2 = self#read_enum_field_ref () in
+			TEnumParameter (t1, t2, self#read_uleb128 ())
 		| 46 -> TEnumIndex (self#read_typed_expr ())
 		| 47 -> TIdent (self#read_pstr ())
 		| _ -> raise (HxbReadFailure "read_typed_expr_def"))
@@ -625,23 +710,15 @@ class hxb_reader
 		let epos = self#read_pos () in
 		{eexpr; etype; epos}
 
-	method read_base_type () =
-		let mt_module = self#stub_module () in
-		let mt_path = self#read_path () in
-		let mt_pos = self#read_pos () in
-		let mt_name_pos = self#read_pos () in
-		let mt_private = self#read_bool () in
-		let mt_doc = self#read_doc () in
-		let mt_meta = self#read_list self#read_metadata_entry in
-		let mt_params = self#read_type_params () in
-		let mt_using = self#read_list self#read_class_using in
-		{mt_module; mt_path; mt_pos; mt_name_pos; mt_private; mt_doc; mt_meta; mt_params; mt_using}
+	method read_base_type res =
+		res.mt_doc <- self#read_doc ();
+		res.mt_meta <- self#read_list self#read_metadata_entry;
+		res.mt_params <- self#read_type_params ();
+		res.mt_using <- self#read_list self#read_class_using
 
 	method read_class_using () =
 		let t1 = self#read_class_ref () in
 		t1, (self#read_pos ())
-
-	method stub_module () = raise (Failure "not implemented")
 
 	method read_class_field () =
 		let cf_name = self#read_pstr () in
@@ -678,7 +755,7 @@ class hxb_reader
 		let cf_params = self#read_type_params () in
 		let cf_expr = self#read_nullable self#read_typed_expr in
 		let cf_expr_unoptimized = self#read_nullable self#read_tfunc in
-		let cf_overloads = [] in (* TODO *)
+		let cf_overloads = self#read_list self#read_class_field_ref in
 		let cf_flags_public, cf_flags_extern, cf_flags_final, cf_flags_overridden, cf_flags_modifies_this = self#read_bools5 () in
 		let cf_flags = ref 0 in
 		if cf_flags_public then cf_flags := set_flag !cf_flags (int_of_class_field_flag CfPublic);
@@ -689,18 +766,40 @@ class hxb_reader
 		let cf_flags = !cf_flags in
 		{cf_name; cf_type; cf_pos; cf_name_pos; cf_doc; cf_meta; cf_kind; cf_params; cf_expr; cf_expr_unoptimized; cf_overloads; cf_flags}
 
-	(*method read_class_type () =
-		let base = self#read_base_type () in
-		let cl_kind = self#read_enum (function
+	method read_class_type res =
+		self#read_base_type (t_infos (TClassDecl res));
+		res.cl_kind <- self#read_enum (function
 			| 0 -> KNormal
 			| 1 -> KTypeParameter (self#read_list self#read_type)
 			| 2 -> KExpr (self#read_expr ())
 			| 3 -> KGeneric
-
+			| 4 ->
+				let cl, params = self#read_param_class_type () in
+				KGenericInstance (cl, params)
 			| 5 -> KMacroType
+			| 6 -> KGenericBuild (self#read_list self#read_field)
+			| 7 -> KAbstractImpl (self#read_abstract_ref ())
+			| _ -> raise (HxbReadFailure "read_class_type cl_kind"));
+		let cl_extern, cl_final, cl_interface = self#read_bools3 () in
+		res.cl_extern <- cl_extern;
+		res.cl_final <- cl_final;
+		res.cl_interface <- cl_interface;
+		res.cl_super <- self#read_nullable self#read_param_class_type;
+		res.cl_implements <- self#read_list self#read_param_class_type;
+		res.cl_ordered_fields <- self#read_list self#read_class_field;
+		res.cl_ordered_statics <- self#read_list self#read_class_field;
+		res.cl_dynamic <- self#read_nullable self#read_type;
+		res.cl_array_access <- self#read_nullable self#read_type;
+		res.cl_constructor <- self#read_nullable self#read_class_field_ref;
+		res.cl_init <- self#read_nullable self#read_typed_expr;
+		res.cl_overrides <- self#read_list self#read_class_field_ref;
+		res.cl_fields <- List.fold_left (fun map field -> PMap.add field.cf_name field map) PMap.empty res.cl_ordered_fields;
+		res.cl_statics <- List.fold_left (fun map field -> PMap.add field.cf_name field map) PMap.empty res.cl_ordered_statics;
+		res.cl_descendants <- []
 
-			| _ -> raise (HxbReadFailure "read_class_type cl_kind"))
-		let cl_extern, cl_final, cl_interface = self#read_bools3 () in*)
+	method read_param_class_type () =
+		let t1 = self#read_class_ref () in
+		t1, (self#read_list self#read_type)
 
 	method read_enum_field ef_index =
 		let ef_name = self#read_pstr () in
@@ -712,38 +811,158 @@ class hxb_reader
 		let ef_meta = self#read_list self#read_metadata_entry in
 		{ef_name; ef_type; ef_pos; ef_name_pos; ef_doc; ef_index; ef_params; ef_meta}
 
+	method read_enum_type res =
+		self#read_base_type (t_infos (TEnumDecl res));
+		self#read_def_type res.e_type;
+		res.e_extern <- false;
+		let fields = self#read_list_indexed self#read_enum_field in
+		res.e_constrs <- List.fold_left (fun map field -> PMap.add field.ef_name field map) PMap.empty fields;
+		res.e_names <- List.map (fun field -> field.ef_name) fields
+
+	method read_abstract_type res =
+		self#read_base_type (t_infos (TAbstractDecl res));
+		res.a_ops <- self#read_list self#read_abstract_binop;
+		res.a_unops <- self#read_list self#read_abstract_unop;
+		res.a_impl <- self#read_nullable self#read_class_ref;
+		res.a_this <- self#read_type ();
+		res.a_from <- self#read_list self#read_type;
+		res.a_from_field <- self#read_list self#read_abstract_from_to;
+		res.a_to <- self#read_list self#read_type;
+		res.a_to_field <- self#read_list self#read_abstract_from_to;
+		res.a_array <- self#read_list self#read_class_field_ref;
+		res.a_read <- self#read_nullable self#read_class_field_ref;
+		res.a_write <- self#read_nullable self#read_class_field_ref
+
+	method read_abstract_binop () =
+		let t1 = self#read_binop () in
+		t1, (self#read_class_field_ref ())
+
+	method read_abstract_unop () =
+		let op, flag = self#read_unop () in
+		op, flag, (self#read_class_field_ref ())
+
+	method read_abstract_from_to () =
+		let t1 = self#read_type () in
+		t1, (self#read_class_field_ref ())
+
+	method read_def_type res =
+		self#read_base_type (t_infos (TTypeDecl res));
+		res.t_type <- self#read_type ()
+
+	(* Stub types created before the real type is decoded *)
+
+	method stub_base (name, pos, name_pos, priv) =
+		let current_module = Option.get current_module in
+		let mt_path = (if priv then
+				fst current_module.m_path @ ["_" ^ snd current_module.m_path]
+			else
+				fst current_module.m_path), name in
+		let mt_module = current_module in
+		let mt_pos = pos in
+		let mt_name_pos = name_pos in
+		let mt_private = priv in
+		let mt_doc = None in
+		let mt_meta = [] in
+		let mt_params = [] in
+		let mt_using = [] in
+		{mt_module; mt_path; mt_pos; mt_name_pos; mt_private; mt_doc; mt_meta; mt_params; mt_using}
+
+	method stub_class (name, pos, name_pos, priv) =
+		let current_module = Option.get current_module in
+		let path = (if priv then
+				fst current_module.m_path @ ["_" ^ snd current_module.m_path]
+			else
+				fst current_module.m_path), name in
+		let cl = mk_class current_module path pos name_pos in
+		cl.cl_private <- priv;
+		cl
+
+	method stub_enum ft =
+		let mt = self#stub_base ft in
+		let e_type = self#stub_typedef ft in
+		let e_extern  = false in
+		let e_constrs = PMap.empty in
+		let e_names = [] in
+		{
+			e_module = mt.mt_module; e_path = mt.mt_path; e_pos = mt.mt_pos;
+			e_name_pos = mt.mt_name_pos; e_private = mt.mt_private; e_doc = mt.mt_doc;
+			e_meta = mt.mt_meta; e_params = mt.mt_params; e_using = mt.mt_using;
+
+			e_type; e_extern; e_constrs; e_names
+		}
+
+	method stub_abstract ft =
+		let mt = self#stub_base ft in
+		let a_ops = [] in
+		let a_unops = [] in
+		let a_impl = None in
+		let a_this = t_dynamic in
+		let a_from = [] in
+		let a_from_field = [] in
+		let a_to = [] in
+		let a_to_field = [] in
+		let a_array = [] in
+		let a_read = None in
+		let a_write = None in
+		{
+			a_module = mt.mt_module; a_path = mt.mt_path; a_pos = mt.mt_pos;
+			a_name_pos = mt.mt_name_pos; a_private = mt.mt_private; a_doc = mt.mt_doc;
+			a_meta = mt.mt_meta; a_params = mt.mt_params; a_using = mt.mt_using;
+
+			a_ops; a_unops; a_impl; a_this; a_from; a_from_field; a_to; a_to_field; a_array; a_read; a_write
+		}
+
+	method stub_typedef ft =
+		let mt = self#stub_base ft in
+		let t_type = t_dynamic in
+		{
+			t_module = mt.mt_module; t_path = mt.mt_path; t_pos = mt.mt_pos;
+			t_name_pos = mt.mt_name_pos; t_private = mt.mt_private; t_doc = mt.mt_doc;
+			t_meta = mt.mt_meta; t_params = mt.mt_params; t_using = mt.mt_using;
+
+			t_type
+		}
+
 	(* File structure *)
 
-	method read_chunk_header () =
-		last_file <- "";
-		last_delta <- 0;
+	method read_chunk () =
 		let chk_id = Bytes.to_string (self#read_str_raw 4) in
 		let chk_size = Int32.to_int (self#read_u32 ()) in
-		{chk_id; chk_size}
+		let chk_data = self#read_str_raw chk_size in
+		let chk_checksum = self#read_u32 () in
+		(* TODO: verify checksum *)
+		{chk_id; chk_size; chk_data; chk_checksum}
 
 	method read_header () =
 		let config_store_positions = self#read_bool () in
 		let module_path = self#read_path () in
-		{config_store_positions; module_path}
+		last_header <- Some {config_store_positions; module_path}
 
 	method read_string_pool () =
 		let data = self#read_arr self#read_str in
-		({data} : hxb_chunk_string_pool)
+		last_string_pool <- Some {data}
 
 	method read_doc_pool () =
 		let data = self#read_arr self#read_str in
-		({data} : hxb_chunk_doc_pool)
+		last_doc_pool <- Some {data}
 
 	method read_type_list () =
 		let external_classes = self#read_arr self#read_path in
 		let external_enums = self#read_arr self#read_path in
 		let external_abstracts = self#read_arr self#read_path in
 		let external_typedefs = self#read_arr self#read_path in
-		let internal_classes = self#read_arr self#read_str in
-		let internal_enums = self#read_arr self#read_str in
-		let internal_abstracts = self#read_arr self#read_str in
-		let internal_typedefs = self#read_arr self#read_str in
-		{external_classes; external_enums; external_abstracts; external_typedefs; internal_classes; internal_enums; internal_abstracts; internal_typedefs}
+		let internal_classes = self#read_arr self#read_forward_type in
+		let internal_enums = self#read_arr self#read_forward_type in
+		let internal_abstracts = self#read_arr self#read_forward_type in
+		let internal_typedefs = self#read_arr self#read_forward_type in
+		built_classes <- Some (Array.map self#stub_class internal_classes);
+		built_enums <- Some (Array.map self#stub_enum internal_enums);
+		built_abstracts <- Some (Array.map self#stub_abstract internal_abstracts);
+		built_typedefs <- Some (Array.map self#stub_typedef internal_typedefs);
+		last_type_list <- Some {
+			external_classes; external_enums; external_abstracts; external_typedefs;
+			internal_classes; internal_enums; internal_abstracts; internal_typedefs
+		}
 
 	method read_field_list () =
 		let type_list = Option.get last_type_list in
@@ -751,35 +970,59 @@ class hxb_reader
 		let read2 = Array.map (fun _ -> self#read_arr self#read_str) in
 		let class_fields = Array.append (read1 type_list.external_classes) (read2 type_list.internal_classes) in
 		let enum_fields = Array.append (read1 type_list.external_enums) (read2 type_list.internal_enums) in
-		{class_fields; enum_fields}
+		last_field_list <- Some {class_fields; enum_fields}
+
+	method read_module_extra () = raise (Failure "not implemented")
 
 	method read_type_declarations () =
-		raise (Failure "lol")
+		Array.iter self#read_class_type (Option.get built_classes);
+		Array.iter self#read_enum_type (Option.get built_enums);
+		Array.iter self#read_abstract_type (Option.get built_abstracts);
+		Array.iter self#read_def_type (Option.get built_typedefs)
 
-	method read_module_extra () =
-		raise (Failure "lol")
+	method process_chunk chunk f =
+		last_file <- "";
+		last_delta <- 0;
+		ch <- IO.input_bytes chunk.chk_data;
+		f ()
 
-	method read_hxb () =
+	method process_chunks pass =
+		match chunks with
+			| Some (header :: rest) ->
+				if header.chk_id <> "HHDR" then
+					raise (HxbReadFailure "first chunk should be a header");
+				self#process_chunk header self#read_header;
+				List.iter (fun chunk -> match chunk.chk_id with
+					| "HHDR" -> raise (HxbReadFailure "duplicate header")
+					| "HEND" -> ()
+					(* pass 0: process string and doc pools *)
+					| "STRI" -> if pass = 0 then self#process_chunk chunk self#read_string_pool
+					| "dOCS" -> if pass = 0 then self#process_chunk chunk self#read_doc_pool
+					(* pass 1: process forward declarations *)
+					| "TYPL" -> if pass = 1 then self#process_chunk chunk self#read_type_list
+					| "FLDL" -> if pass = 1 then self#process_chunk chunk self#read_field_list
+					| "xTRA" -> if pass = 1 then self#process_chunk chunk self#read_module_extra
+					(* pass 2: process typed AST *)
+					| "TYPE" -> if pass = 2 then self#process_chunk chunk self#read_type_declarations
+					| _ -> raise (HxbReadFailure "unknown chunk") (* TODO: skip if ancillary *)
+				) rest
+		| _ -> assert false
+
+	method read_hxb1 () =
 		if (Bytes.to_string (self#read_str_raw 4)) <> "hxb1" then
 			raise (HxbReadFailure "magic");
-		(* TODO: allow chunk reordering by reading chunk headers only, then
-			processing chunk types in a well-defined order. *)
-		last_header <- Some (self#read_header ());
 		let rec loop () =
-			let chunk_header = self#read_chunk_header () in
-			(if (match chunk_header.chk_id with
-				| "HHDR" -> raise (HxbReadFailure "duplicate header")
-				| "HEND" -> false
-				| "STRI" -> last_string_pool <- Some (self#read_string_pool ()); true
-				| "dOCS" -> last_doc_pool <- Some (self#read_doc_pool ()); true
-				| "TYPL" -> last_type_list <- Some (self#read_type_list ()); true
-				| "FLDL" -> last_field_list <- Some (self#read_field_list ()); true
-				| "TYPE" -> last_type_declarations <- Some (self#read_type_declarations ()); true
-				| "xTRA" -> last_module_extra <- Some (self#read_module_extra ()); true
-				| _ -> raise (HxbReadFailure "unknown chunk") (* TODO: skip if ancillary *)) then
-				ignore (self#read_u32 ()); (* TODO: checksum verify *)
-				loop ());
-			()
-		in loop ()
+			let chunk = self#read_chunk () in
+			if chunk.chk_id = "HEND" then
+				[chunk]
+			else
+				chunk :: (loop ())
+		in
+		chunks <- Some (loop ());
+		self#process_chunks 0;
+		self#process_chunks 1
+
+	method read_hxb2 () =
+		self#process_chunks 2
 
 end

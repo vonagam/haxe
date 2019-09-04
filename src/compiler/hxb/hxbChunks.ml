@@ -5,6 +5,8 @@ open Type
 type hxb_chunk = {
 	chk_id : string;
 	chk_size : int;
+	chk_data : bytes;
+	chk_checksum : int32;
 }
 
 type hxb_chunk_header = {
@@ -25,10 +27,10 @@ type hxb_chunk_type_list = {
 	external_enums : path array;
 	external_abstracts : path array;
 	external_typedefs : path array;
-	internal_classes : string array;
-	internal_enums : string array;
-	internal_abstracts : string array;
-	internal_typedefs : string array;
+	internal_classes : (string * pos * pos * bool) array;
+	internal_enums : (string * pos * pos * bool) array;
+	internal_abstracts : (string * pos * pos * bool) array;
+	internal_typedefs : (string * pos * pos * bool) array;
 }
 
 type hxb_chunk_field_list = {

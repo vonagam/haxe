@@ -204,14 +204,14 @@ and tclass_kind =
 and metadata = Ast.metadata
 
 and tinfos = {
-	mt_path : path;
-	mt_module : module_def;
-	mt_pos : pos;
-	mt_name_pos : pos;
-	mt_private : bool;
-	mt_doc : Ast.documentation;
+	mutable mt_path : path;
+	mutable mt_module : module_def;
+	mutable mt_pos : pos;
+	mutable mt_name_pos : pos;
+	mutable mt_private : bool;
+	mutable mt_doc : Ast.documentation;
 	mutable mt_meta : metadata;
-	mt_params : type_params;
+	mutable mt_params : type_params;
 	mutable mt_using : (tclass * pos) list;
 }
 
