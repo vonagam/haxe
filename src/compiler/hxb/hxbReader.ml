@@ -32,6 +32,9 @@ class hxb_reader
 	val mutable built_abstracts : tabstract array option = None
 	val mutable built_typedefs : tdef array option = None
 
+	val mutable class_field_lookup : tclass_field array option = None
+	val mutable enum_field_lookup : tenum_field array option = None
+
 	val mutable current_module : module_def option = None
 
 	(* Primitives *)
@@ -203,35 +206,10 @@ class hxb_reader
 		self#resolve_typedef (self#read_uleb128 ())
 
 	method read_class_field_ref () =
-		let index = self#read_uleb128 () in
-		let field_list = Option.get last_field_list in
-		let rec loop type_index index =
-			let len = Array.length field_list.class_fields.(type_index) in
-			if index >= len then
-				loop (type_index + 1) (index - len)
-			else
-				let field_name = field_list.class_fields.(type_index).(index) in
-				let resolved = self#resolve_class type_index in
-				if PMap.mem field_name resolved.cl_fields then
-					PMap.find field_name resolved.cl_fields
-				else
-					PMap.find field_name resolved.cl_statics
-		in
-		loop 0 index
+		(Option.get class_field_lookup).(self#read_uleb128 ())
 
 	method read_enum_field_ref () =
-		let index = self#read_uleb128 () in
-		let field_list = Option.get last_field_list in
-		let rec loop type_index index =
-			let len = Array.length field_list.enum_fields.(type_index) in
-			if index >= len then
-				loop (type_index + 1) (index - len)
-			else
-				let field_name = field_list.enum_fields.(type_index).(index) in
-				let resolved = self#resolve_enum type_index in
-				PMap.find field_name resolved.e_constrs
-		in
-		loop 0 index
+		(Option.get enum_field_lookup).(self#read_uleb128 ())
 
 	method read_forward_type () =
 		let t1 = self#read_str () in
@@ -975,6 +953,20 @@ class hxb_reader
 	method read_module_extra () = raise (Failure "not implemented")
 
 	method read_type_declarations () =
+		let field_list = Option.get last_field_list in
+		class_field_lookup <- Some (Array.concat (Array.to_list (Array.mapi (fun type_index fields ->
+			let resolved = self#resolve_class type_index in
+			Array.map (fun field_name ->
+					if PMap.mem field_name resolved.cl_fields then
+						PMap.find field_name resolved.cl_fields
+					else
+						PMap.find field_name resolved.cl_statics
+				) fields
+		) field_list.class_fields)));
+		enum_field_lookup <- Some (Array.concat (Array.to_list (Array.mapi (fun type_index fields ->
+			let resolved = self#resolve_enum type_index in
+			Array.map (fun field_name -> PMap.find field_name resolved.e_constrs) fields
+		) field_list.class_fields)));
 		Array.iter self#read_class_type (Option.get built_classes);
 		Array.iter self#read_enum_type (Option.get built_enums);
 		Array.iter self#read_abstract_type (Option.get built_abstracts);
