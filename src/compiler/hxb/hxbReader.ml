@@ -488,10 +488,28 @@ class hxb_reader
 	method read_type () = self#read_enum (function
 		| 0 -> TMono (ref None)
 		| 1 -> TMono (ref (Some (self#read_type ())))
-
+		| 2 -> TEnum (self#read_enum_ref (), [])
+		| 3 ->
+			let t1 = self#read_enum_ref () in
+			TEnum (t1, self#read_list self#read_type)
+		| 4 -> TInst (self#read_class_ref (), [])
+		| 5 ->
+			let t1 = self#read_class_ref () in
+			TInst (t1, self#read_list self#read_type)
+		| 6 -> TType (self#read_typedef_ref (), [])
+		| 7 ->
+			let t1 = self#read_typedef_ref () in
+			TType (t1, self#read_list self#read_type)
+		| 8 ->
+			let t1 = self#read_list self#read_tfun_arg in
+			TFun (t1, self#read_type ())
+		| 9 -> TAnon (self#read_anon_type ())
 		| 10 -> t_dynamic
 		| 11 -> TDynamic (self#read_type ())
-
+		| 12 -> TAbstract (self#read_abstract_ref (), [])
+		| 13 ->
+			let t1 = self#read_abstract_ref () in
+			TAbstract (t1, self#read_list self#read_type)
 		| _ -> raise (HxbReadFailure "read_type"))
 
 	method read_tfun_arg () =
