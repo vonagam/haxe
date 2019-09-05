@@ -10,6 +10,10 @@ exception HxbWriteFailure of string
 type 'a pool = ('a, int) Hashtbl.t * 'a DynArray.t
 let create_pool : 'a . unit -> 'a pool = fun () ->
 	Hashtbl.create 0, DynArray.create ()
+let grow_pools : 'a . 'a pool DynArray.t -> int -> unit = fun pools index ->
+	while index >= DynArray.length pools do
+		DynArray.add pools (create_pool ())
+	done
 
 class ['a] hxb_writer
 	(file_ch : 'a IO.output)
@@ -17,8 +21,6 @@ class ['a] hxb_writer
 	= object(self)
 
 	val mutable ch : bytes IO.output = IO.output_bytes ()
-
-	val mutable chunks : hxb_chunk list option = None
 
 	val mutable last_file = ""
 	val mutable last_delta = 0
@@ -34,6 +36,11 @@ class ['a] hxb_writer
 	val internal_abstracts_pool : tabstract pool = create_pool ()
 	val internal_typedefs_pool : tdef pool = create_pool ()
 
+	val internal_class_field_pools : tclass_field pool DynArray.t = DynArray.create ()
+	val external_class_field_pools : tclass_field pool DynArray.t = DynArray.create ()
+	val internal_enum_field_pools : tenum_field pool DynArray.t = DynArray.create ()
+	val external_enum_field_pools : tenum_field pool DynArray.t = DynArray.create ()
+
 	(* Primitives *)
 
 	method write_u8 v =
@@ -48,13 +55,22 @@ class ['a] hxb_writer
 	method write_uleb128 v =
 		let b = v land 0x7F in
 		let rest = v lsr 7 in
-		if rest <> 0 then (
+		if rest = 0 then
+			self#write_u8 b
+		else begin
 			self#write_u8 (b lor 0x80);
 			self#write_uleb128 rest
-		) else
-			self#write_u8 b
+		end
 
-	method write_leb128 (v : int) = () (* TODO *)
+	method write_leb128 v =
+		let b = v land 0x7F in
+		let rest = v asr 7 in
+		if (rest = 0 && (b land 0x40 = 0)) || (rest = -1 && (b land 0x40 = 0x40)) then
+			self#write_u8 b
+		else begin
+			self#write_u8 (b lor 0x80);
+			self#write_leb128 rest
+		end
 
 	method write_str_raw v =
 		IO.nwrite ch v
@@ -85,8 +101,9 @@ class ['a] hxb_writer
 			f v
 
 	method write_delta v =
-		raise (Failure "todo");
-		()
+		let delta = v - last_delta in
+		last_delta <- v;
+		self#write_leb128 delta
 
 	(* Haxe, globals.ml and misc *)
 
@@ -118,36 +135,60 @@ class ['a] hxb_writer
 	method write_pstr v =
 		self#write_uleb128 (self#index_pool string_pool v)
 
+	method index_class_ref v =
+		if v.cl_module = current_module then
+			self#index_pool internal_classes_pool v
+		else
+			-1 - (self#index_pool external_classes_pool v.cl_path)
+
 	method write_class_ref v =
-		self#write_leb128 (if v.cl_module = current_module then
-				self#index_pool internal_classes_pool v
-			else
-				- (self#index_pool external_classes_pool v.cl_path))
+		self#write_leb128 (self#index_class_ref v)
+
+	method index_enum_ref v =
+		if v.e_module = current_module then
+			self#index_pool internal_enums_pool v
+		else
+			-1 - (self#index_pool external_enums_pool v.e_path)
 
 	method write_enum_ref v =
-		self#write_leb128 (if v.e_module = current_module then
-				self#index_pool internal_enums_pool v
-			else
-				- (self#index_pool external_enums_pool v.e_path))
+		self#write_leb128 (self#index_enum_ref v)
 
 	method write_abstract_ref v =
 		self#write_leb128 (if v.a_module = current_module then
 				self#index_pool internal_abstracts_pool v
 			else
-				- (self#index_pool external_abstracts_pool v.a_path))
+				-1 - (self#index_pool external_abstracts_pool v.a_path))
 
 	method write_typedef_ref v =
 		self#write_leb128 (if v.t_module = current_module then
 				self#index_pool internal_typedefs_pool v
 			else
-				- (self#index_pool external_typedefs_pool v.t_path))
-(*
-	method read_class_field_ref () =
-		(Option.get class_field_lookup).(self#read_uleb128 ())
+				-1 - (self#index_pool external_typedefs_pool v.t_path))
 
-	method read_enum_field_ref () =
-		(Option.get enum_field_lookup).(self#read_uleb128 ())
-*)
+	method write_class_field_ref t v =
+		let t_index = self#index_class_ref t in
+		let index = (if t_index < 0 then begin
+			let t_index = -t_index - 1 in
+			grow_pools external_class_field_pools t_index;
+			-1 - (self#index_pool (DynArray.get external_class_field_pools t_index) v)
+		end else begin
+			grow_pools internal_class_field_pools t_index;
+			self#index_pool (DynArray.get internal_class_field_pools t_index) v
+		end) in
+		self#write_leb128 index
+
+	method write_enum_field_ref t v =
+		let t_index = self#index_enum_ref t in
+		let index = (if t_index < 0 then begin
+			let t_index = -t_index - 1 in
+			grow_pools external_enum_field_pools t_index;
+			-1 - (self#index_pool (DynArray.get external_enum_field_pools t_index) v)
+		end else begin
+			grow_pools internal_enum_field_pools t_index;
+			self#index_pool (DynArray.get internal_enum_field_pools t_index) v
+		end) in
+		self#write_leb128 index
+
 	method write_forward_type t =
 		self#write_str (snd t.mt_path);
 		self#write_pos t.mt_pos;
@@ -500,6 +541,7 @@ class ['a] hxb_writer
 	(* Haxe, type.ml *)
 
 	method write_type = function
+		| TLazy t -> self#write_type (lazy_type t)
 		| TMono {contents = None} -> self#write_u8 0
 		| TMono {contents = Some v} ->
 			self#write_u8 1;
@@ -532,7 +574,7 @@ class ['a] hxb_writer
 		| TAnon v ->
 			self#write_u8 9;
 			self#write_anon_type v
-		| t_dynamic -> self#write_u8 10
+		| t when t == t_dynamic -> self#write_u8 10
 		| TDynamic v ->
 			self#write_u8 11;
 			self#write_type v
@@ -631,12 +673,12 @@ class ['a] hxb_writer
 			self#write_typed_expr v1;
 			self#write_class_ref v2;
 			self#write_list v3 self#write_type;
-			self#write_class_field_ref v4
+			self#write_class_field_ref v2 v4
 		| TField (v1, FStatic (v2, v3)) ->
 			self#write_u8 5;
 			self#write_typed_expr v1;
 			self#write_class_ref v2;
-			self#write_class_field_ref v3
+			self#write_class_field_ref v2 v3
 		| TField (v1, FAnon (_)) -> raise (Failure "todo")
 		| TField (v1, FDynamic v2) ->
 			self#write_u8 7;
@@ -648,12 +690,12 @@ class ['a] hxb_writer
 			self#write_typed_expr v1;
 			self#write_class_ref v2;
 			self#write_list v3 self#write_type;
-			self#write_class_field_ref v4
+			self#write_class_field_ref v2 v4
 		| TField (v1, FEnum (v2, v3)) ->
 			self#write_u8 10;
 			self#write_typed_expr v1;
 			self#write_enum_ref v2;
-			self#write_enum_field_ref v3
+			self#write_enum_field_ref v2 v3
 		| TTypeExpr (TClassDecl v) ->
 			self#write_u8 11;
 			self#write_class_ref v
@@ -773,9 +815,10 @@ class ['a] hxb_writer
 			self#write_metadata_entry v1;
 			self#write_typed_expr v2
 		| TEnumParameter (v1, v2, v3) ->
+			let t = (match follow v1.etype with TEnum (t, _) -> t | _ -> assert false) in
 			self#write_u8 45;
 			self#write_typed_expr v1;
-			self#write_enum_field_ref v2;
+			self#write_enum_field_ref t v2;
 			self#write_uleb128 v3
 		| TEnumIndex v ->
 			self#write_u8 46;
@@ -813,7 +856,7 @@ class ['a] hxb_writer
 		self#write_class_ref t1;
 		self#write_pos t2
 
-	method write_class_field v =
+	method write_class_field t v =
 		self#write_pstr v.cf_name;
 		self#write_type v.cf_type;
 		self#write_pos v.cf_pos;
@@ -848,7 +891,7 @@ class ['a] hxb_writer
 		self#write_type_params v.cf_params;
 		self#write_nullable v.cf_expr self#write_typed_expr;
 		self#write_nullable v.cf_expr_unoptimized self#write_tfunc;
-		self#write_list v.cf_overloads self#write_class_field_ref;
+		self#write_list v.cf_overloads (self#write_class_field_ref t);
 		self#write_bools [
 			has_class_field_flag v CfPublic;
 			has_class_field_flag v CfExtern;
@@ -885,13 +928,13 @@ class ['a] hxb_writer
 		];
 		self#write_nullable v.cl_super self#write_param_class_type;
 		self#write_list v.cl_implements self#write_param_class_type;
-		self#write_list v.cl_ordered_fields self#write_class_field;
-		self#write_list v.cl_ordered_statics self#write_class_field;
+		self#write_list v.cl_ordered_fields (self#write_class_field v);
+		self#write_list v.cl_ordered_statics (self#write_class_field v);
 		self#write_nullable v.cl_dynamic self#write_type;
 		self#write_nullable v.cl_array_access self#write_type;
-		self#write_nullable v.cl_constructor self#write_class_field_ref;
+		self#write_nullable v.cl_constructor (self#write_class_field_ref v);
 		self#write_nullable v.cl_init self#write_typed_expr;
-		self#write_list v.cl_overrides self#write_class_field_ref
+		self#write_list v.cl_overrides (self#write_class_field_ref v)
 
 	method write_param_class_type (t1, t2) =
 		self#write_class_ref t1;
@@ -914,29 +957,29 @@ class ['a] hxb_writer
 
 	method write_abstract_type v =
 		self#write_base_type (t_infos (TAbstractDecl v));
-		self#write_list v.a_ops self#write_abstract_binop;
-		self#write_list v.a_unops self#write_abstract_unop;
+		self#write_list v.a_ops (self#write_abstract_binop v);
+		self#write_list v.a_unops (self#write_abstract_unop v);
 		self#write_nullable v.a_impl self#write_class_ref;
 		self#write_type v.a_this;
 		self#write_list v.a_from self#write_type;
-		self#write_list v.a_from_field self#write_abstract_from_to;
+		self#write_list v.a_from_field (self#write_abstract_from_to v);
 		self#write_list v.a_to self#write_type;
-		self#write_list v.a_to_field self#write_abstract_from_to;
-		self#write_list v.a_array self#write_class_field_ref;
-		self#write_nullable v.a_read self#write_class_field_ref;
-		self#write_nullable v.a_write self#write_class_field_ref
+		self#write_list v.a_to_field (self#write_abstract_from_to v);
+		self#write_list v.a_array (fun f -> self#write_class_field_ref (Option.get v.a_impl) f);
+		self#write_nullable v.a_read (fun f -> self#write_class_field_ref (Option.get v.a_impl) f);
+		self#write_nullable v.a_write (fun f -> self#write_class_field_ref (Option.get v.a_impl) f);
 
-	method write_abstract_binop (t1, t2) =
+	method write_abstract_binop v (t1, t2) =
 		self#write_binop t1;
-		self#write_class_field_ref t2
+		self#write_class_field_ref (Option.get v.a_impl) t2
 
-	method write_abstract_unop (op, flag, t) =
+	method write_abstract_unop v (op, flag, t) =
 		self#write_unop (op, flag);
-		self#write_class_field_ref t
+		self#write_class_field_ref (Option.get v.a_impl) t
 
-	method write_abstract_from_to (t1, t2) =
+	method write_abstract_from_to v (t1, t2) =
 		self#write_type t1;
-		self#write_class_field_ref t2
+		self#write_class_field_ref (Option.get v.a_impl) t2
 
 	method write_def_type v =
 		self#write_base_type (t_infos (TTypeDecl v));
@@ -964,17 +1007,19 @@ class ['a] hxb_writer
 		DynArray.iter (fun t -> self#write_forward_type (t_infos (TEnumDecl t))) (snd internal_enums_pool);
 		DynArray.iter (fun t -> self#write_forward_type (t_infos (TAbstractDecl t))) (snd internal_abstracts_pool);
 		DynArray.iter (fun t -> self#write_forward_type (t_infos (TTypeDecl t))) (snd internal_typedefs_pool)
-(*
-	method read_field_list () =
-		let type_list = Option.get last_type_list in
-		let read1 = Array.map (fun _ -> self#read_arr self#read_str) in
-		let read2 = Array.map (fun _ -> self#read_arr self#read_str) in
-		let class_fields = Array.append (read1 type_list.external_classes) (read2 type_list.internal_classes) in
-		let enum_fields = Array.append (read1 type_list.external_enums) (read2 type_list.internal_enums) in
-		last_field_list <- Some {class_fields; enum_fields}
 
-	method read_module_extra () = raise (Failure "not implemented")
-*)
+	method write_field_list () =
+		let write_enum_fields pool = DynArray.iter (fun f -> self#write_str f.ef_name) (snd pool) in
+		let write_class_fields pool = DynArray.iter (fun f -> self#write_str f.cf_name) (snd pool) in
+		DynArray.iter write_class_fields external_class_field_pools;
+		DynArray.iter write_class_fields internal_class_field_pools;
+		DynArray.iter write_enum_fields external_enum_field_pools;
+		DynArray.iter write_enum_fields internal_enum_field_pools
+
+	method read_module_extra () =
+		(* TODO *)
+		()
+
 	method write_type_declarations () =
 		List.iter (fun t -> match t with TClassDecl t -> self#write_class_type t | _ -> ()) current_module.m_types;
 		List.iter (fun t -> match t with TEnumDecl t -> self#write_enum_type t | _ -> ()) current_module.m_types;
@@ -999,6 +1044,7 @@ class ['a] hxb_writer
 
 	method write_hxb () =
 		let type_declarations = self#create_chunk "TYPE" self#write_type_declarations in
+		let field_list = self#create_chunk "FLDL" self#write_field_list in
 		let type_list = self#create_chunk "TYPL" self#write_type_list in
 		let doc_pool = self#create_chunk "dOCS" self#write_doc_pool in
 		let string_pool = self#create_chunk "STRI" self#write_string_pool in
@@ -1006,6 +1052,7 @@ class ['a] hxb_writer
 		self#write_chunk string_pool;
 		self#write_chunk doc_pool;
 		self#write_chunk type_list;
+		self#write_chunk field_list;
 		self#write_chunk type_declarations;
 		self#write_chunk (self#create_chunk "HEND" (fun () -> ()))
 

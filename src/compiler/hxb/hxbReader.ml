@@ -141,7 +141,7 @@ class hxb_reader
 		else
 			let pmin = self#read_delta () in
 			let pmax_flag = self#read_leb128 () in
-			let pmax, file_present = pmax_flag lsr 1, (pmax_flag land 1) <> 0 in
+			let pmax, file_present = pmax_flag asr 1, (pmax_flag land 1) <> 0 in
 			if file_present then
 				last_file <- self#read_pstr ();
 			{pfile = last_file; pmin; pmax}
