@@ -138,23 +138,23 @@ module HxbEnums = struct
 			| VInlined -> 1
 			| VInlinedConstructorVariable -> 2
 			| VExtractorVariable -> 3
-			| VUser(TVOLocalVariable) -> 4
-			| VUser(TVOArgument) -> 5
-			| VUser(TVOForVariable) -> 6
-			| VUser(TVOPatternVariable) -> 7
-			| VUser(TVOCatchVariable) -> 8
-			| VUser(TVOLocalFunction) -> 9
+			| VUser TVOLocalVariable -> 4
+			| VUser TVOArgument -> 5
+			| VUser TVOForVariable -> 6
+			| VUser TVOPatternVariable -> 7
+			| VUser TVOCatchVariable -> 8
+			| VUser TVOLocalFunction -> 9
 		let from_int = function
 			| 0 -> VGenerated
 			| 1 -> VInlined
 			| 2 -> VInlinedConstructorVariable
 			| 3 -> VExtractorVariable
-			| 4 -> VUser(TVOLocalVariable)
-			| 5 -> VUser(TVOArgument)
-			| 6 -> VUser(TVOForVariable)
-			| 7 -> VUser(TVOPatternVariable)
-			| 8 -> VUser(TVOCatchVariable)
-			| 9 -> VUser(TVOLocalFunction)
+			| 4 -> VUser TVOLocalVariable
+			| 5 -> VUser TVOArgument
+			| 6 -> VUser TVOForVariable
+			| 7 -> VUser TVOPatternVariable
+			| 8 -> VUser TVOCatchVariable
+			| 9 -> VUser TVOLocalFunction
 			| _ -> raise (Invalid_argument "enum")
 	end
 end

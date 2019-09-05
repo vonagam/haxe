@@ -78,6 +78,7 @@ class hxb_reader
 		Bytes.unsafe_to_string (self#read_str_raw (self#read_uleb128 ()))
 
 	method read_list_indexed : 'b . (int -> 'b) -> 'b list = fun f ->
+		(* TODO: reverse lists in storage *)
 		let rec read n =
 			if n = 0 then
 				[]
@@ -724,10 +725,10 @@ class hxb_reader
 		let cf_doc = self#read_doc () in
 		let cf_meta = self#read_list self#read_metadata_entry in
 		let cf_kind = self#read_enum (function
-			| 0 -> Method(MethNormal)
-			| 1 -> Method(MethInline)
-			| 2 -> Method(MethDynamic)
-			| 3 -> Method(MethMacro)
+			| 0 -> Method MethNormal
+			| 1 -> Method MethInline
+			| 2 -> Method MethDynamic
+			| 3 -> Method MethMacro
 			| v when (v >= 10) && (v <= 234) ->
 				let v = v - 10 in
 				let r = v / 15 in
@@ -810,7 +811,7 @@ class hxb_reader
 	method read_enum_type res =
 		self#read_base_type (t_infos (TEnumDecl res));
 		self#read_def_type res.e_type;
-		res.e_extern <- false;
+		res.e_extern <- self#read_bool ();
 		let fields = self#read_list_indexed self#read_enum_field in
 		res.e_constrs <- List.fold_left (fun map field -> PMap.add field.ef_name field map) PMap.empty fields;
 		res.e_names <- List.map (fun field -> field.ef_name) fields
@@ -922,8 +923,8 @@ class hxb_reader
 	(* File structure *)
 
 	method read_chunk () =
-		let chk_id = Bytes.to_string (self#read_str_raw 4) in
 		let chk_size = Int32.to_int (self#read_u32 ()) in
+		let chk_id = Bytes.to_string (self#read_str_raw 4) in
 		let chk_data = self#read_str_raw chk_size in
 		let chk_checksum = self#read_u32 () in
 		(* TODO: verify checksum *)
