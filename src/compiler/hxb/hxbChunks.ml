@@ -34,8 +34,8 @@ type hxb_chunk_type_list = {
 }
 
 type hxb_chunk_field_list = {
-	class_fields : string array array;
-	enum_fields : string array array;
+	class_fields : (string list * string list) array;
+	enum_fields : string list array;
 }
 
 type hxb_chunk_type_declarations = {

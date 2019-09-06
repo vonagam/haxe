@@ -256,7 +256,7 @@ and tenum_field = {
 	mutable ef_type : t;
 	ef_pos : pos;
 	ef_name_pos : pos;
-	ef_doc : Ast.documentation;
+	mutable ef_doc : Ast.documentation;
 	ef_index : int;
 	mutable ef_params : type_params;
 	mutable ef_meta : metadata;

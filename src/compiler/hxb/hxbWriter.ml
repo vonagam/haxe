@@ -36,11 +36,6 @@ class ['a] hxb_writer
 	val internal_abstracts_pool : tabstract pool = create_pool ()
 	val internal_typedefs_pool : tdef pool = create_pool ()
 
-	val internal_class_field_pools : tclass_field pool DynArray.t = DynArray.create ()
-	val external_class_field_pools : tclass_field pool DynArray.t = DynArray.create ()
-	val internal_enum_field_pools : tenum_field pool DynArray.t = DynArray.create ()
-	val external_enum_field_pools : tenum_field pool DynArray.t = DynArray.create ()
-
 	(* Primitives *)
 
 	method write_u8 v =
@@ -83,6 +78,21 @@ class ['a] hxb_writer
 		self#write_uleb128 (List.length v);
 		List.iter f v
 
+	method write_dynarr : 'b . 'b DynArray.t -> ('b -> unit) -> unit = fun v f ->
+		self#write_uleb128 (DynArray.length v);
+		DynArray.iter f v
+
+	method write_pool : 'b . 'b pool -> ('b -> unit) -> unit = fun v f ->
+		self#write_dynarr (snd v) f
+
+	method write_pmap : 'b 'c . ('b, 'c) PMap.t -> (('b * 'c) -> unit) -> unit = fun v f ->
+		let l = PMap.foldi (fun k v acc -> (k, v) :: acc) v [] in
+		self#write_list l f
+
+	method write_hashtbl : 'b 'c . ('b, 'c) Hashtbl.t -> (('b * 'c) -> unit) -> unit = fun v f ->
+		self#write_uleb128 (Hashtbl.length v);
+		Hashtbl.iter (fun k v -> f (k, v)) v
+
 	method write_bool v =
 		self#write_u8 (if v then 1 else 0)
 
@@ -109,18 +119,22 @@ class ['a] hxb_writer
 
 	method write_pos v =
 		(* TODO: header if (Option.get last_header).config_store_positions; then *)
-			(* TODO: file present *)
 			self#write_delta v.pmin;
-			let file_present = (v.pfile = last_file) in
+			let file_present = (v.pfile <> last_file) in
 			(* TODO: delta? *)
 			self#write_leb128 ((v.pmax lsl 1) lor (if file_present then 1 else 0));
-			if file_present then
+			if file_present then begin
 				last_file <- v.pfile;
 				self#write_pstr last_file
+			end
 
 	method write_path (t1, t2) =
 		self#write_list t1 self#write_pstr;
 		self#write_pstr t2
+
+	method write_upath (t1, t2) =
+		self#write_list t1 self#write_str;
+		self#write_str t2
 
 	method index_pool : 'b . 'b pool -> 'b -> int = fun pool v ->
 		let hash, arr = pool in
@@ -136,7 +150,7 @@ class ['a] hxb_writer
 		self#write_uleb128 (self#index_pool string_pool v)
 
 	method index_class_ref v =
-		if v.cl_module = current_module then
+		if v.cl_module == current_module then
 			self#index_pool internal_classes_pool v
 		else
 			-1 - (self#index_pool external_classes_pool v.cl_path)
@@ -145,7 +159,7 @@ class ['a] hxb_writer
 		self#write_leb128 (self#index_class_ref v)
 
 	method index_enum_ref v =
-		if v.e_module = current_module then
+		if v.e_module == current_module then
 			self#index_pool internal_enums_pool v
 		else
 			-1 - (self#index_pool external_enums_pool v.e_path)
@@ -153,47 +167,40 @@ class ['a] hxb_writer
 	method write_enum_ref v =
 		self#write_leb128 (self#index_enum_ref v)
 
+	method index_abstract_ref v =
+		if v.a_module == current_module then
+			self#index_pool internal_abstracts_pool v
+		else
+			-1 - (self#index_pool external_abstracts_pool v.a_path)
+
 	method write_abstract_ref v =
-		self#write_leb128 (if v.a_module = current_module then
-				self#index_pool internal_abstracts_pool v
-			else
-				-1 - (self#index_pool external_abstracts_pool v.a_path))
+		self#write_leb128 (self#index_abstract_ref v)
+
+	method index_typedef_ref v =
+		if v.t_module == current_module then
+			self#index_pool internal_typedefs_pool v
+		else
+			-1 - (self#index_pool external_typedefs_pool v.t_path)
 
 	method write_typedef_ref v =
-		self#write_leb128 (if v.t_module = current_module then
-				self#index_pool internal_typedefs_pool v
-			else
-				-1 - (self#index_pool external_typedefs_pool v.t_path))
+		self#write_leb128 (self#index_typedef_ref v)
 
 	method write_class_field_ref t v =
-		let t_index = self#index_class_ref t in
-		let index = (if t_index < 0 then begin
-			let t_index = -t_index - 1 in
-			grow_pools external_class_field_pools t_index;
-			-1 - (self#index_pool (DynArray.get external_class_field_pools t_index) v)
-		end else begin
-			grow_pools internal_class_field_pools t_index;
-			self#index_pool (DynArray.get internal_class_field_pools t_index) v
-		end) in
-		self#write_leb128 index
+		self#write_pstr v.cf_name
 
 	method write_enum_field_ref t v =
-		let t_index = self#index_enum_ref t in
-		let index = (if t_index < 0 then begin
-			let t_index = -t_index - 1 in
-			grow_pools external_enum_field_pools t_index;
-			-1 - (self#index_pool (DynArray.get external_enum_field_pools t_index) v)
-		end else begin
-			grow_pools internal_enum_field_pools t_index;
-			self#index_pool (DynArray.get internal_enum_field_pools t_index) v
-		end) in
-		self#write_leb128 index
+		self#write_pstr v.ef_name
 
 	method write_forward_type t =
-		self#write_str (snd t.mt_path);
+		self#write_pstr (snd t.mt_path);
 		self#write_pos t.mt_pos;
 		self#write_pos t.mt_name_pos;
 		self#write_bool t.mt_private
+
+	method write_forward_field (name, pos, name_pos) =
+		self#write_pstr name;
+		self#write_pos pos;
+		self#write_pos name_pos
 
 	(* Haxe, ast.ml *)
 
@@ -561,8 +568,13 @@ class ['a] hxb_writer
 			self#write_class_ref v1;
 			self#write_list v2 self#write_type
 		| TType (v, []) ->
-			self#write_u8 6;
-			self#write_typedef_ref v
+			(match follow v.t_type with
+				| TAnon ({a_status = {contents = Statics _}} as v) ->
+					self#write_u8 9;
+					self#write_anon_type v
+				| _ ->
+					self#write_u8 6;
+					self#write_typedef_ref v)
 		| TType (v1, v2) ->
 			self#write_u8 7;
 			self#write_typedef_ref v1;
@@ -857,10 +869,7 @@ class ['a] hxb_writer
 		self#write_pos t2
 
 	method write_class_field t v =
-		self#write_pstr v.cf_name;
 		self#write_type v.cf_type;
-		self#write_pos v.cf_pos;
-		self#write_pos v.cf_name_pos;
 		self#write_doc v.cf_doc;
 		self#write_list v.cf_meta self#write_metadata_entry;
 		(match v.cf_kind with
@@ -901,6 +910,7 @@ class ['a] hxb_writer
 		]
 
 	method write_class_type v =
+		ignore (self#index_class_ref v);
 		self#write_base_type (t_infos (TClassDecl v));
 		(match v.cl_kind with
 			| KNormal -> self#write_u8 0
@@ -928,8 +938,8 @@ class ['a] hxb_writer
 		];
 		self#write_nullable v.cl_super self#write_param_class_type;
 		self#write_list v.cl_implements self#write_param_class_type;
-		self#write_list v.cl_ordered_fields (self#write_class_field v);
-		self#write_list v.cl_ordered_statics (self#write_class_field v);
+		List.iter (fun f -> self#write_class_field v f) v.cl_ordered_fields;
+		List.iter (fun f -> self#write_class_field v f) v.cl_ordered_statics;
 		self#write_nullable v.cl_dynamic self#write_type;
 		self#write_nullable v.cl_array_access self#write_type;
 		self#write_nullable v.cl_constructor (self#write_class_field_ref v);
@@ -941,25 +951,24 @@ class ['a] hxb_writer
 		self#write_list t2 self#write_type
 
 	method write_enum_field v =
-		self#write_pstr v.ef_name;
 		self#write_type v.ef_type;
-		self#write_pos v.ef_pos;
-		self#write_pos v.ef_name_pos;
 		self#write_doc v.ef_doc;
 		self#write_type_params v.ef_params;
 		self#write_list v.ef_meta self#write_metadata_entry
 
 	method write_enum_type v =
+		ignore (self#index_enum_ref v);
 		self#write_base_type (t_infos (TEnumDecl v));
 		self#write_def_type v.e_type;
 		self#write_bool v.e_extern;
 		List.iter (fun name -> self#write_enum_field (PMap.find name v.e_constrs)) v.e_names
 
 	method write_abstract_type v =
+		ignore (self#index_abstract_ref v);
 		self#write_base_type (t_infos (TAbstractDecl v));
+		self#write_nullable v.a_impl self#write_class_ref;
 		self#write_list v.a_ops (self#write_abstract_binop v);
 		self#write_list v.a_unops (self#write_abstract_unop v);
-		self#write_nullable v.a_impl self#write_class_ref;
 		self#write_type v.a_this;
 		self#write_list v.a_from self#write_type;
 		self#write_list v.a_from_field (self#write_abstract_from_to v);
@@ -982,6 +991,7 @@ class ['a] hxb_writer
 		self#write_class_field_ref (Option.get v.a_impl) t2
 
 	method write_def_type v =
+		ignore (self#index_typedef_ref v);
 		self#write_base_type (t_infos (TTypeDecl v));
 		self#write_type v.t_type
 
@@ -989,36 +999,72 @@ class ['a] hxb_writer
 
 	method write_header () =
 		self#write_bool true; (* TODO: config_store_positions *)
-		self#write_path current_module.m_path
+		self#write_upath current_module.m_path;
+		let v = current_module.m_extra in
+		self#write_str v.m_file;
+		self#write_str_raw (Bytes.unsafe_of_string v.m_sign);
+		self#write_list v.m_display.m_inline_calls (fun (t1, t2) ->
+			self#write_pos t1;
+			self#write_pos t2
+		);
+		self#write_list v.m_check_policy (fun v -> self#write_enum v HxbEnums.ModuleCheckPolicy.to_int);
+		self#write_f64 v.m_time;
+		(* TODO: self#write_nullable v.m_dirty (fun v -> self#write_upath v.m_path); *)
+		self#write_leb128 v.m_added;
+		self#write_leb128 v.m_mark;
+		(* self#write_pmap v.m_deps (fun (k, v) -> self#write_upath v.m_path); *)
+		self#write_leb128 v.m_processed;
+		self#write_enum v.m_kind HxbEnums.ModuleKind.to_int;
+		self#write_pmap v.m_binded_res (fun (k, v) ->
+			self#write_str k;
+			self#write_str v
+		);
+		self#write_hashtbl v.m_features (fun (k, v) ->
+			self#write_str k;
+			self#write_bool v
+		)
 
 	method write_string_pool () =
-		DynArray.iter self#write_str (snd string_pool)
+		self#write_pool string_pool self#write_str
 
 	method write_doc_pool () =
 		(* TODO: config_store_docs *)
-		DynArray.iter self#write_str (snd doc_pool)
+		self#write_pool doc_pool self#write_str
 
 	method write_type_list () =
-		DynArray.iter self#write_path (snd external_classes_pool);
-		DynArray.iter self#write_path (snd external_enums_pool);
-		DynArray.iter self#write_path (snd external_abstracts_pool);
-		DynArray.iter self#write_path (snd external_typedefs_pool);
-		DynArray.iter (fun t -> self#write_forward_type (t_infos (TClassDecl t))) (snd internal_classes_pool);
-		DynArray.iter (fun t -> self#write_forward_type (t_infos (TEnumDecl t))) (snd internal_enums_pool);
-		DynArray.iter (fun t -> self#write_forward_type (t_infos (TAbstractDecl t))) (snd internal_abstracts_pool);
-		DynArray.iter (fun t -> self#write_forward_type (t_infos (TTypeDecl t))) (snd internal_typedefs_pool)
+		self#write_pool external_classes_pool self#write_path;
+		self#write_pool external_enums_pool self#write_path;
+		self#write_pool external_abstracts_pool self#write_path;
+		self#write_pool external_typedefs_pool self#write_path;
+		self#write_pool internal_classes_pool (fun t -> self#write_forward_type (t_infos (TClassDecl t)));
+		self#write_pool internal_enums_pool (fun t -> self#write_forward_type (t_infos (TEnumDecl t)));
+		self#write_pool internal_abstracts_pool (fun t -> self#write_forward_type (t_infos (TAbstractDecl t)));
+		self#write_pool internal_typedefs_pool (fun t -> self#write_forward_type (t_infos (TTypeDecl t)))
 
 	method write_field_list () =
-		let write_enum_fields pool = DynArray.iter (fun f -> self#write_str f.ef_name) (snd pool) in
-		let write_class_fields pool = DynArray.iter (fun f -> self#write_str f.cf_name) (snd pool) in
-		DynArray.iter write_class_fields external_class_field_pools;
-		DynArray.iter write_class_fields internal_class_field_pools;
-		DynArray.iter write_enum_fields external_enum_field_pools;
-		DynArray.iter write_enum_fields internal_enum_field_pools
+		DynArray.iter (fun t ->
+			self#write_list t.cl_ordered_statics (fun field -> self#write_forward_field (field.cf_name, field.cf_pos, field.cf_name_pos));
+			self#write_list t.cl_ordered_fields (fun field -> self#write_forward_field (field.cf_name, field.cf_pos, field.cf_name_pos))
+		) (snd internal_classes_pool);
+		DynArray.iter (fun t ->
+			self#write_list t.e_names (fun name ->
+				let field = PMap.find name t.e_constrs in
+				self#write_forward_field (field.ef_name, field.ef_pos, field.ef_name_pos)
+			)
+		) (snd internal_enums_pool)
 
-	method read_module_extra () =
-		(* TODO *)
-		()
+	method write_module_extra () =
+		let v = current_module.m_extra in
+		self#write_list v.m_display.m_type_hints (fun (t1, t2) ->
+			self#write_pos t1;
+			self#write_type t2
+		);
+		self#write_list v.m_if_feature (fun (t1, (t2, t3, t4)) ->
+			self#write_str t1;
+			self#write_class_ref t2;
+			self#write_class_field_ref t2 t3;
+			self#write_bool t4
+		)
 
 	method write_type_declarations () =
 		List.iter (fun t -> match t with TClassDecl t -> self#write_class_type t | _ -> ()) current_module.m_types;
@@ -1033,7 +1079,7 @@ class ['a] hxb_writer
 		f ();
 		let chk_data = IO.close_out ch in
 		let chk_size = Bytes.length chk_data in
-		let chk_checksum = Int32.of_int 0 in (* TODO *)
+		let chk_checksum = Int32.of_int 0x1234567 in (* TODO *)
 		{chk_id; chk_size; chk_data; chk_checksum}
 
 	method write_chunk chk =
@@ -1044,15 +1090,18 @@ class ['a] hxb_writer
 
 	method write_hxb () =
 		let type_declarations = self#create_chunk "TYPE" self#write_type_declarations in
+		let module_extra = self#create_chunk "xTRA" self#write_module_extra in
 		let field_list = self#create_chunk "FLDL" self#write_field_list in
 		let type_list = self#create_chunk "TYPL" self#write_type_list in
 		let doc_pool = self#create_chunk "dOCS" self#write_doc_pool in
 		let string_pool = self#create_chunk "STRI" self#write_string_pool in
+		IO.nwrite file_ch (Bytes.unsafe_of_string "hxb1");
 		self#write_chunk (self#create_chunk "HHDR" self#write_header);
 		self#write_chunk string_pool;
 		self#write_chunk doc_pool;
 		self#write_chunk type_list;
 		self#write_chunk field_list;
+		self#write_chunk module_extra;
 		self#write_chunk type_declarations;
 		self#write_chunk (self#create_chunk "HEND" (fun () -> ()))
 

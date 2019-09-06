@@ -32,9 +32,6 @@ class hxb_reader
 	val mutable built_abstracts : tabstract array option = None
 	val mutable built_typedefs : tdef array option = None
 
-	val mutable class_field_lookup : tclass_field array option = None
-	val mutable enum_field_lookup : tenum_field array option = None
-
 	val mutable current_module : module_def option = None
 
 	(* Primitives *)
@@ -58,18 +55,18 @@ class hxb_reader
 	method read_leb128 () =
 		let rec read acc shift =
 			let b = self#read_u8 () in
-			let cont = b >= 0x80 in
 			let acc = ((b land 0x7F) lsl shift) lor acc in
-			if cont then
+			if b >= 0x80 then
 				read acc (shift + 7)
 			else
 				(b, acc, shift + 7)
 		in
 		let last, acc, shift = read 0 0 in
-		if (last land 0x40) <> 0 then
+		let res = (if (last land 0x40) <> 0 then
 			acc lor ((lnot 0) lsl shift)
 		else
-			acc
+			acc) in
+		res
 
 	method read_str_raw len =
 		IO.really_nread ch len
@@ -85,13 +82,22 @@ class hxb_reader
 			else
 				(f n) :: (read (n - 1))
 		in
-		List.rev (read (self#read_uleb128 ()))
+		let len = self#read_uleb128 () in
+		List.rev (read len)
 
 	method read_list : 'b . (unit -> 'b) -> 'b list = fun f ->
 		self#read_list_indexed (fun _ -> f ())
 
 	method read_arr : 'b . (unit -> 'b) -> 'b array = fun f ->
 		Array.init (self#read_uleb128 ()) (fun _ -> f ())
+
+	method read_pmap : 'b 'c . (unit -> 'b * 'c) -> ('b, 'c) PMap.t = fun f ->
+		let l = self#read_list f in
+		List.fold_left (fun map (k, v) -> PMap.add k v map) PMap.empty l
+
+	method read_hashtbl : 'b 'c . (unit -> 'b * 'c) -> ('b, 'c) Hashtbl.t = fun f ->
+		let l = self#read_list f in
+		List.fold_left (fun map (k, v) -> Hashtbl.add map k v; map) (Hashtbl.create 0) l
 
 	method read_bool () =
 		(self#read_u8 ()) <> 0
@@ -151,72 +157,91 @@ class hxb_reader
 		let t2 = self#read_pstr () in
 		t1, t2
 
+	method read_upath () =
+		let t1 = self#read_list self#read_str in
+		let t2 = self#read_str () in
+		t1, t2
+
 	method read_pstr () =
 		(Option.get last_string_pool).data.(self#read_uleb128 ())
 
 	method resolve_class index =
 		let type_list = Option.get last_type_list in
-		if index < (Array.length type_list.external_classes) then
+		if index >= 0 then
+			let built_classes = Option.get built_classes in
+			built_classes.(index)
+		else
+			let index = -index - 1 in
 			match (resolve_type type_list.external_classes.(index)) with
 				| TClassDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
-		else
-			let built_classes = Option.get built_classes in
-			built_classes.(index - (Array.length type_list.external_classes))
 
 	method read_class_ref () =
-		self#resolve_class (self#read_uleb128 ())
+		self#resolve_class (self#read_leb128 ())
 
 	method resolve_enum index =
 		let type_list = Option.get last_type_list in
-		if index < (Array.length type_list.external_enums) then
+		if index >= 0 then
+			let built_enums = Option.get built_enums in
+			built_enums.(index)
+		else
+			let index = -index - 1 in
 			match (resolve_type type_list.external_enums.(index)) with
 				| TEnumDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
-		else
-			let built_enums = Option.get built_enums in
-			built_enums.(index - (Array.length type_list.external_enums))
 
 	method read_enum_ref () =
-		self#resolve_enum (self#read_uleb128 ())
+		self#resolve_enum (self#read_leb128 ())
 
 	method resolve_abstract index =
 		let type_list = Option.get last_type_list in
-		if index < (Array.length type_list.external_abstracts) then
+		if index >= 0 then
+			let built_abstracts = Option.get built_abstracts in
+			built_abstracts.(index)
+		else
+			let index = -index - 1 in
 			match (resolve_type type_list.external_abstracts.(index)) with
 				| TAbstractDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
-		else
-			let built_abstracts = Option.get built_abstracts in
-			built_abstracts.(index - (Array.length type_list.external_abstracts))
 
 	method read_abstract_ref () =
-		self#resolve_abstract (self#read_uleb128 ())
+		self#resolve_abstract (self#read_leb128 ())
 
 	method resolve_typedef index =
 		let type_list = Option.get last_type_list in
-		if index < (Array.length type_list.external_typedefs) then
+		if index >= 0 then
+			let built_typedefs = Option.get built_typedefs in
+			built_typedefs.(index)
+		else
+			let index = -index - 1 in
 			match (resolve_type type_list.external_typedefs.(index)) with
 				| TTypeDecl t -> t
 				| _ -> raise (HxbReadFailure "expected class type")
-		else
-			let built_typedefs = Option.get built_typedefs in
-			built_typedefs.(index - (Array.length type_list.external_typedefs))
 
 	method read_typedef_ref () =
-		self#resolve_typedef (self#read_uleb128 ())
+		self#resolve_typedef (self#read_leb128 ())
 
-	method read_class_field_ref () =
-		(Option.get class_field_lookup).(self#read_uleb128 ())
+	method read_class_field_ref t =
+		let field_name = self#read_pstr () in
+		if PMap.mem field_name t.cl_fields then
+			PMap.find field_name t.cl_fields
+		else
+			PMap.find field_name t.cl_statics
 
-	method read_enum_field_ref () =
-		(Option.get enum_field_lookup).(self#read_uleb128 ())
+	method read_enum_field_ref t =
+		let field_name = self#read_pstr () in
+		PMap.find field_name t.e_constrs
 
 	method read_forward_type () =
-		let t1 = self#read_str () in
+		let t1 = self#read_pstr () in
 		let t2 = self#read_pos () in
 		let t3 = self#read_pos () in
 		t1, t2, t3, (self#read_bool ())
+
+	method read_forward_field () =
+		let t1 = self#read_pstr () in
+		let t2 = self#read_pos () in
+		t1, t2, (self#read_pos ())
 
 	(* Haxe, ast.ml *)
 
@@ -586,11 +611,11 @@ class hxb_reader
 			let t1 = self#read_typed_expr () in
 			let t2 = self#read_class_ref () in
 			let t3 = self#read_list self#read_type in
-			TField (t1, FInstance (t2, t3, self#read_class_field_ref ()))
+			TField (t1, FInstance (t2, t3, self#read_class_field_ref t2))
 		| 5 ->
 			let t1 = self#read_typed_expr () in
 			let t2 = self#read_class_ref () in
-			TField (t1, FStatic (t2, self#read_class_field_ref ()))
+			TField (t1, FStatic (t2, self#read_class_field_ref t2))
 		(* TODO: 6 -> TField (e, FAnon (...)) *)
 		| 7 ->
 			let t1 = self#read_typed_expr () in
@@ -600,11 +625,11 @@ class hxb_reader
 			let t1 = self#read_typed_expr () in
 			let t2 = self#read_class_ref () in
 			let t3 = self#read_list self#read_type in
-			TField (t1, FClosure (Some (t2, t3), self#read_class_field_ref ()))
+			TField (t1, FClosure (Some (t2, t3), self#read_class_field_ref t2))
 		| 10 ->
 			let t1 = self#read_typed_expr () in
 			let t2 = self#read_enum_ref () in
-			TField (t1, FEnum (t2, self#read_enum_field_ref ()))
+			TField (t1, FEnum (t2, self#read_enum_field_ref t2))
 		| 11 -> TTypeExpr (TClassDecl (self#read_class_ref ()))
 		| 12 -> TTypeExpr (TEnumDecl (self#read_enum_ref ()))
 		| 13 -> TTypeExpr (TTypeDecl (self#read_typedef_ref ()))
@@ -681,7 +706,8 @@ class hxb_reader
 			TMeta (t1, self#read_typed_expr ())
 		| 45 ->
 			let t1 = self#read_typed_expr () in
-			let t2 = self#read_enum_field_ref () in
+			let t = (match follow t1.etype with TEnum (t, _) -> t | _ -> assert false) in
+			let t2 = self#read_enum_field_ref t in
 			TEnumParameter (t1, t2, self#read_uleb128 ())
 		| 46 -> TEnumIndex (self#read_typed_expr ())
 		| 47 -> TIdent (self#read_pstr ())
@@ -717,14 +743,11 @@ class hxb_reader
 		let t1 = self#read_class_ref () in
 		t1, (self#read_pos ())
 
-	method read_class_field () =
-		let cf_name = self#read_pstr () in
-		let cf_type = self#read_type () in
-		let cf_pos = self#read_pos () in
-		let cf_name_pos = self#read_pos () in
-		let cf_doc = self#read_doc () in
-		let cf_meta = self#read_list self#read_metadata_entry in
-		let cf_kind = self#read_enum (function
+	method read_class_field t res =
+		res.cf_type <- self#read_type ();
+		res.cf_doc <- self#read_doc ();
+		res.cf_meta <- self#read_list self#read_metadata_entry;
+		res.cf_kind <- self#read_enum (function
 			| 0 -> Method MethNormal
 			| 1 -> Method MethInline
 			| 2 -> Method MethDynamic
@@ -748,11 +771,11 @@ class hxb_reader
 				let v_read = sub_access r in
 				let v_write = sub_access w in
 				Var {v_read; v_write}
-			| _ -> raise (HxbReadFailure "read_typed_expr_def cf_kind")) in
-		let cf_params = self#read_type_params () in
-		let cf_expr = self#read_nullable self#read_typed_expr in
-		let cf_expr_unoptimized = self#read_nullable self#read_tfunc in
-		let cf_overloads = self#read_list self#read_class_field_ref in
+			| _ -> raise (HxbReadFailure "read_typed_expr_def cf_kind"));
+		res.cf_params <- self#read_type_params ();
+		res.cf_expr <- self#read_nullable self#read_typed_expr;
+		res.cf_expr_unoptimized <- self#read_nullable self#read_tfunc;
+		res.cf_overloads <- self#read_list (fun () -> self#read_class_field_ref t);
 		let cf_flags_public, cf_flags_extern, cf_flags_final, cf_flags_overridden, cf_flags_modifies_this = self#read_bools5 () in
 		let cf_flags = ref 0 in
 		if cf_flags_public then cf_flags := set_flag !cf_flags (int_of_class_field_flag CfPublic);
@@ -760,10 +783,10 @@ class hxb_reader
 		if cf_flags_final then cf_flags := set_flag !cf_flags (int_of_class_field_flag CfFinal);
 		if cf_flags_overridden then cf_flags := set_flag !cf_flags (int_of_class_field_flag CfOverridden);
 		if cf_flags_modifies_this then cf_flags := set_flag !cf_flags (int_of_class_field_flag CfModifiesThis);
-		let cf_flags = !cf_flags in
-		{cf_name; cf_type; cf_pos; cf_name_pos; cf_doc; cf_meta; cf_kind; cf_params; cf_expr; cf_expr_unoptimized; cf_overloads; cf_flags}
+		res.cf_flags <- !cf_flags;
+		res
 
-	method read_class_type res =
+	method read_class_type res (statics, fields) =
 		self#read_base_type (t_infos (TClassDecl res));
 		res.cl_kind <- self#read_enum (function
 			| 0 -> KNormal
@@ -783,70 +806,63 @@ class hxb_reader
 		res.cl_interface <- cl_interface;
 		res.cl_super <- self#read_nullable self#read_param_class_type;
 		res.cl_implements <- self#read_list self#read_param_class_type;
-		res.cl_ordered_fields <- self#read_list self#read_class_field;
-		res.cl_ordered_statics <- self#read_list self#read_class_field;
+		res.cl_ordered_fields <- List.map (fun name -> self#read_class_field res (PMap.find name res.cl_fields)) fields;
+		res.cl_ordered_statics <- List.map (fun name -> self#read_class_field res (PMap.find name res.cl_statics)) statics;
 		res.cl_dynamic <- self#read_nullable self#read_type;
 		res.cl_array_access <- self#read_nullable self#read_type;
-		res.cl_constructor <- self#read_nullable self#read_class_field_ref;
+		res.cl_constructor <- self#read_nullable (fun () -> self#read_class_field_ref res);
 		res.cl_init <- self#read_nullable self#read_typed_expr;
-		res.cl_overrides <- self#read_list self#read_class_field_ref;
-		res.cl_fields <- List.fold_left (fun map field -> PMap.add field.cf_name field map) PMap.empty res.cl_ordered_fields;
-		res.cl_statics <- List.fold_left (fun map field -> PMap.add field.cf_name field map) PMap.empty res.cl_ordered_statics;
+		res.cl_overrides <- self#read_list (fun () -> self#read_class_field_ref res);
 		res.cl_descendants <- []
 
 	method read_param_class_type () =
 		let t1 = self#read_class_ref () in
 		t1, (self#read_list self#read_type)
 
-	method read_enum_field ef_index =
-		let ef_name = self#read_pstr () in
-		let ef_type = self#read_type () in
-		let ef_pos = self#read_pos () in
-		let ef_name_pos = self#read_pos () in
-		let ef_doc = self#read_doc () in
-		let ef_params = self#read_type_params () in
-		let ef_meta = self#read_list self#read_metadata_entry in
-		{ef_name; ef_type; ef_pos; ef_name_pos; ef_doc; ef_index; ef_params; ef_meta}
+	method read_enum_field res ef_index =
+		res.ef_type <- self#read_type ();
+		res.ef_doc <- self#read_doc ();
+		res.ef_params <- self#read_type_params ();
+		res.ef_meta <- self#read_list self#read_metadata_entry
 
-	method read_enum_type res =
+	method read_enum_type res fields =
 		self#read_base_type (t_infos (TEnumDecl res));
 		self#read_def_type res.e_type;
 		res.e_extern <- self#read_bool ();
-		let fields = self#read_list_indexed self#read_enum_field in
-		res.e_constrs <- List.fold_left (fun map field -> PMap.add field.ef_name field map) PMap.empty fields;
-		res.e_names <- List.map (fun field -> field.ef_name) fields
+		List.iteri (fun index name -> self#read_enum_field (PMap.find name res.e_constrs) index) fields;
+		res.e_names <- fields
 
 	method read_abstract_type res =
 		self#read_base_type (t_infos (TAbstractDecl res));
-		res.a_ops <- self#read_list self#read_abstract_binop;
-		res.a_unops <- self#read_list self#read_abstract_unop;
 		res.a_impl <- self#read_nullable self#read_class_ref;
+		res.a_ops <- self#read_list (fun () -> self#read_abstract_binop res);
+		res.a_unops <- self#read_list (fun () -> self#read_abstract_unop res);
 		res.a_this <- self#read_type ();
 		res.a_from <- self#read_list self#read_type;
-		res.a_from_field <- self#read_list self#read_abstract_from_to;
+		res.a_from_field <- self#read_list (fun () -> self#read_abstract_from_to res);
 		res.a_to <- self#read_list self#read_type;
-		res.a_to_field <- self#read_list self#read_abstract_from_to;
-		res.a_array <- self#read_list self#read_class_field_ref;
-		res.a_read <- self#read_nullable self#read_class_field_ref;
-		res.a_write <- self#read_nullable self#read_class_field_ref
+		res.a_to_field <- self#read_list (fun () -> self#read_abstract_from_to res);
+		res.a_array <- self#read_list (fun () -> self#read_class_field_ref (Option.get res.a_impl));
+		res.a_read <- self#read_nullable (fun () -> self#read_class_field_ref (Option.get res.a_impl));
+		res.a_write <- self#read_nullable (fun () -> self#read_class_field_ref (Option.get res.a_impl))
 
-	method read_abstract_binop () =
+	method read_abstract_binop t =
 		let t1 = self#read_binop () in
-		t1, (self#read_class_field_ref ())
+		t1, (self#read_class_field_ref (Option.get t.a_impl))
 
-	method read_abstract_unop () =
+	method read_abstract_unop t =
 		let op, flag = self#read_unop () in
-		op, flag, (self#read_class_field_ref ())
+		op, flag, (self#read_class_field_ref (Option.get t.a_impl))
 
-	method read_abstract_from_to () =
+	method read_abstract_from_to t =
 		let t1 = self#read_type () in
-		t1, (self#read_class_field_ref ())
+		t1, (self#read_class_field_ref (Option.get t.a_impl))
 
 	method read_def_type res =
 		self#read_base_type (t_infos (TTypeDecl res));
 		res.t_type <- self#read_type ()
 
-	(* Stub types created before the real type is decoded *)
+	(* Stub types and fields created before the real type is decoded *)
 
 	method stub_base (name, pos, name_pos, priv) =
 		let current_module = Option.get current_module in
@@ -874,6 +890,26 @@ class hxb_reader
 		cl.cl_private <- priv;
 		cl
 
+	method stub_class_field t is_static (cf_name, cf_pos, cf_name_pos) =
+		let cf_type = t_dynamic in
+		let cf_doc = None in
+		let cf_meta = [] in
+		let cf_kind = Var {v_read = AccNormal; v_write = AccNormal} in
+		let cf_params = [] in
+		let cf_expr = None in
+		let cf_expr_unoptimized = None in
+		let cf_overloads = [] in
+		let cf_flags = 0 in
+		let cf = {
+			cf_name; cf_pos; cf_name_pos; cf_type; cf_doc; cf_meta; cf_kind;
+			cf_params; cf_expr; cf_expr_unoptimized; cf_overloads; cf_flags
+		} in
+		(* only add to lookup maps, since external references don't use cl_ordered_* *)
+		if is_static then
+			t.cl_statics <- PMap.add cf_name cf t.cl_statics
+		else
+			t.cl_fields <- PMap.add cf_name cf t.cl_fields
+
 	method stub_enum ft =
 		let mt = self#stub_base ft in
 		let e_type = self#stub_typedef ft in
@@ -887,6 +923,15 @@ class hxb_reader
 
 			e_type; e_extern; e_constrs; e_names
 		}
+
+	method stub_enum_field t ef_index (ef_name, ef_pos, ef_name_pos) =
+		let ef_type = t_dynamic in
+		let ef_doc = None in
+		let ef_params = [] in
+		let ef_meta = [] in
+		let ef = {ef_name; ef_type; ef_pos; ef_name_pos; ef_doc; ef_index; ef_params; ef_meta} in
+		(* only add to lookup map, since external references don't use e_names *)
+		t.e_constrs <- PMap.add ef_name ef t.e_constrs
 
 	method stub_abstract ft =
 		let mt = self#stub_base ft in
@@ -932,8 +977,47 @@ class hxb_reader
 
 	method read_header () =
 		let config_store_positions = self#read_bool () in
-		let module_path = self#read_path () in
-		last_header <- Some {config_store_positions; module_path}
+		let m_path = self#read_upath () in
+		last_header <- Some {config_store_positions; module_path = m_path};
+		let m_file = self#read_str () in
+		let m_sign = Bytes.unsafe_to_string (self#read_str_raw 16) in
+		let m_inline_calls = self#read_list (fun () ->
+			let t1 = self#read_pos () in
+			t1, (self#read_pos ())
+		) in
+		let m_type_hints = [] in
+		let m_check_policy = self#read_list (fun () -> self#read_enum HxbEnums.ModuleCheckPolicy.from_int) in
+		let m_time = self#read_f64 () in
+		let m_dirty = None in (* TODO *)
+		let m_added = self#read_leb128 () in
+		let m_mark = self#read_leb128 () in
+		let m_deps = PMap.empty in (* TODO *)
+		let m_processed = self#read_leb128 () in
+		let m_kind = self#read_enum HxbEnums.ModuleKind.from_int in
+		let m_binded_res = self#read_pmap (fun () ->
+			let t1 = self#read_str () in
+			t1, (self#read_str ())
+		) in
+		let m_if_feature = [] in
+		let m_features = self#read_hashtbl (fun () ->
+			let t1 = self#read_str () in
+			t1, (self#read_bool ())
+		) in
+		current_module <- Some {
+			m_id = 0;
+			m_path = m_path;
+			m_types = [];
+			m_extra = {
+				m_file; m_sign;
+				m_display = {
+					m_inline_calls;
+					m_type_hints
+				};
+				m_check_policy;
+				m_time; m_dirty; m_added; m_mark; m_deps; m_processed;
+				m_kind; m_binded_res; m_if_feature; m_features;
+			}
+		}
 
 	method read_string_pool () =
 		let data = self#read_arr self#read_str in
@@ -962,34 +1046,45 @@ class hxb_reader
 		}
 
 	method read_field_list () =
-		let type_list = Option.get last_type_list in
-		let read1 = Array.map (fun _ -> self#read_arr self#read_str) in
-		let read2 = Array.map (fun _ -> self#read_arr self#read_str) in
-		let class_fields = Array.append (read1 type_list.external_classes) (read2 type_list.internal_classes) in
-		let enum_fields = Array.append (read1 type_list.external_enums) (read2 type_list.internal_enums) in
+		let class_fields = Array.map (fun t ->
+			let statics = self#read_list self#read_forward_field in
+			let fields = self#read_list self#read_forward_field in
+			List.iter (fun f -> self#stub_class_field t true f) statics;
+			List.iter (fun f -> self#stub_class_field t false f) fields;
+			(List.map (fun (name, _, _) -> name) statics), (List.map (fun (name, _, _) -> name) fields)
+		) (Option.get built_classes) in
+		let enum_fields = Array.map (fun t ->
+			let constrs = self#read_list self#read_forward_field in
+			List.iteri (fun index f -> self#stub_enum_field t index f) constrs;
+			List.map (fun (name, _, _) -> name) constrs
+		) (Option.get built_enums) in
 		last_field_list <- Some {class_fields; enum_fields}
 
-	method read_module_extra () = raise (Failure "not implemented")
+	method read_module_extra () =
+		let current_module = Option.get current_module in
+		current_module.m_extra.m_display.m_type_hints <- self#read_list (fun () ->
+			let t1 = self#read_pos () in
+			t1, (self#read_type ())
+		);
+		current_module.m_extra.m_if_feature <- self#read_list (fun () ->
+			let t1 = self#read_str () in
+			let t2 = self#read_class_ref () in
+			let t3 = self#read_class_field_ref t2 in
+			let t4 = self#read_bool () in
+			(t1, (t2, t3, t4))
+		)
 
 	method read_type_declarations () =
-		let field_list = Option.get last_field_list in
-		class_field_lookup <- Some (Array.concat (Array.to_list (Array.mapi (fun type_index fields ->
-			let resolved = self#resolve_class type_index in
-			Array.map (fun field_name ->
-					if PMap.mem field_name resolved.cl_fields then
-						PMap.find field_name resolved.cl_fields
-					else
-						PMap.find field_name resolved.cl_statics
-				) fields
-		) field_list.class_fields)));
-		enum_field_lookup <- Some (Array.concat (Array.to_list (Array.mapi (fun type_index fields ->
-			let resolved = self#resolve_enum type_index in
-			Array.map (fun field_name -> PMap.find field_name resolved.e_constrs) fields
-		) field_list.class_fields)));
-		Array.iter self#read_class_type (Option.get built_classes);
-		Array.iter self#read_enum_type (Option.get built_enums);
+		Array.iter2 self#read_class_type (Option.get built_classes) (Option.get last_field_list).class_fields;
+		Array.iter2 self#read_enum_type (Option.get built_enums) (Option.get last_field_list).enum_fields;
 		Array.iter self#read_abstract_type (Option.get built_abstracts);
-		Array.iter self#read_def_type (Option.get built_typedefs)
+		Array.iter self#read_def_type (Option.get built_typedefs);
+		let m_types = ref [] in
+		m_types := Array.fold_left (fun types t -> (TClassDecl t) :: types) !m_types (Option.get built_classes);
+		m_types := Array.fold_left (fun types t -> (TEnumDecl t) :: types) !m_types (Option.get built_enums);
+		m_types := Array.fold_left (fun types t -> (TAbstractDecl t) :: types) !m_types (Option.get built_abstracts);
+		m_types := Array.fold_left (fun types t -> (TTypeDecl t) :: types) !m_types (Option.get built_typedefs);
+		(Option.get current_module).m_types <- !m_types
 
 	method process_chunk chunk f =
 		last_file <- "";
@@ -1034,6 +1129,7 @@ class hxb_reader
 		self#process_chunks 1
 
 	method read_hxb2 () =
-		self#process_chunks 2
+		self#process_chunks 2;
+		Option.get current_module
 
 end
