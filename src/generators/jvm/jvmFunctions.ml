@@ -12,6 +12,17 @@ let string_of_classification = function
 	| CBool -> "Bool"
 	| CObject -> "Object"
 
+let short_string_of_classification = function
+	| CByte -> "B"
+	| CChar -> "C"
+	| CDouble -> "D"
+	| CFloat -> "F"
+	| CInt -> "I"
+	| CLong -> "L"
+	| CShort -> "S"
+	| CBool -> "Z"
+	| CObject -> "O"
+
 let classify = function
 	| TByte -> CByte
 	| TChar -> CChar
@@ -74,9 +85,9 @@ class typed_functions = object(self)
 		let dargs = List.map declassify cl in
 		let dret = Option.map declassify cr in
 		let interface_name =
-			"Function" ^
-			(String.concat "" (List.map string_of_classification cl)) ^
-			(Option.map_default string_of_classification "Void" cr)
+			"F" ^
+			(String.concat "" (List.map short_string_of_classification cl)) ^
+			(Option.map_default short_string_of_classification "V" cr)
 		in
 		let meth = {
 			arity = List.length cl;
