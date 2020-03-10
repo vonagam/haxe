@@ -364,7 +364,7 @@ let create_field_closure gctx jc path_this jm name jsig =
 		| _ ->
 			assert false
 	in
-	let jm_invoke = wf#generate_invoke args ret in
+	let jm_invoke,meth_invoke = wf#generate_invoke args ret in
 	let vars = List.map (fun (name,jsig) ->
 		jm_invoke#add_local name jsig VarArgument
 	) args in
@@ -511,7 +511,7 @@ class texpr_to_jvm gctx (jc : JvmClass.builder) (jm : JvmMethod.builder) (return
 			) tf.tf_args in
 			args,(return_of_type gctx tf.tf_type)
 		in
-		let jm_invoke = wf#generate_invoke args ret in
+		let jm_invoke,meth_invoke = wf#generate_invoke args ret in
 		let handler = new texpr_to_jvm gctx jc_closure jm_invoke ret in
 		handler#set_env env;
 		let args = List.map (fun (v,eo) ->
@@ -547,6 +547,7 @@ class texpr_to_jvm gctx (jc : JvmClass.builder) (jm : JvmMethod.builder) (return
 				) env);
 			);
 		end;
+		jm#cast (TObject(meth_invoke.interface_path,[]));
 		write_class gctx.jar jc_closure#get_this_path (jc_closure#export_class gctx.default_export_config);
 
 	(* access *)
@@ -591,7 +592,7 @@ class texpr_to_jvm gctx (jc : JvmClass.builder) (jm : JvmMethod.builder) (return
 			let wf = new JvmFunctions.typed_function gctx.typed_functions (FuncStatic(path,name)) jc jm [] in
 			let jc_closure = wf#get_class in
 			ignore(wf#generate_constructor false);
-			let jm_invoke = wf#generate_invoke args ret in
+			let jm_invoke,meth_invoke = wf#generate_invoke args ret in
 			let vars = List.map (fun (name,jsig) ->
 				jm_invoke#add_local name jsig VarArgument
 			) args in
@@ -1369,7 +1370,7 @@ class texpr_to_jvm gctx (jc : JvmClass.builder) (jm : JvmMethod.builder) (return
 			jm#cast haxe_function_sig;
 			let tl,tr = self#call_arguments t el in
 			let meth = gctx.typed_functions#register_signature tl tr in
-			jm#invokevirtual haxe_function_path meth.name (method_sig meth.dargs meth.dret);
+			jm#invokeinterface meth.interface_path meth.name (method_sig meth.dargs meth.dret);
 			tr
 		in
 		let tro = match (Texpr.skip e1).eexpr with
@@ -2815,7 +2816,7 @@ let generate_anons gctx =
 				) locals;
 				let jret = return_of_type gctx tr in
 				let meth = gctx.typed_functions#register_signature (List.map snd locals) jret in
-				jm#invokevirtual haxe_function_path meth.name (method_sig meth.dargs meth.dret);
+				jm#invokeinterface meth.interface_path meth.name (method_sig meth.dargs meth.dret);
 				Option.may jm#cast jret;
 				jm#return
 			) c.cl_ordered_fields
@@ -2824,12 +2825,14 @@ let generate_anons gctx =
 	) gctx.anon_identification#get_anons
 
 let generate_typed_functions gctx =
-	let jc_function = gctx.typed_functions#generate in
-	write_class gctx.jar jc_function#get_this_path (jc_function#export_class gctx.default_export_config);
-	let jc_varargs = gctx.typed_functions#generate_var_args in
-	write_class gctx.jar jc_varargs#get_this_path (jc_varargs#export_class gctx.default_export_config);
-	let jc_closure_dispatch = gctx.typed_functions#generate_closure_dispatch in
-	write_class gctx.jar jc_closure_dispatch#get_this_path (jc_closure_dispatch#export_class gctx.default_export_config)
+	let write_classes jcl =
+		List.iter (fun jc ->
+			write_class gctx.jar jc#get_this_path (jc#export_class gctx.default_export_config);
+		) jcl;
+	in
+	write_classes gctx.typed_functions#generate;
+	write_classes (gctx.typed_functions#generate_var_args);
+	write_classes [gctx.typed_functions#generate_closure_dispatch]
 
 module Preprocessor = struct
 	let make_root path =
@@ -2918,6 +2921,7 @@ let generate com =
 			export_debug = true;
 		}
 	} in
+	JvmSignature.tmethod_to_interface := (fun (args,ret) -> gctx.typed_functions#register_signature args ret);
 	gctx.anon_identification <- anon_identification;
 	gctx.preprocessor <- new preprocessor com.basic (jsignature_of_type gctx);
 	gctx.typedef_interfaces <- new typedef_interfaces anon_identification;

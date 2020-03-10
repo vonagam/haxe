@@ -595,7 +595,7 @@ class builder jc name jsig = object(self)
 		| TMethod _,TMethod _ ->
 			()
 		| TMethod _,_ ->
-			code#checkcast NativeSignatures.haxe_function_path;
+			code#checkcast NativeSignatures.haxe_ifunction_path;
 		| TArray(jsig1,_),TArray(jsig2,_) when jsig1 = jsig2 ->
 			()
 		| TArray _,_ ->

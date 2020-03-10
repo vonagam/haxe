@@ -49,6 +49,32 @@ and jsignature =
 (* ( jsignature list ) ReturnDescriptor (| V | jsignature) *)
 and jmethod_signature = jsignature list * jsignature option
 
+type signature_classification =
+	| CByte
+	| CChar
+	| CDouble
+	| CFloat
+	| CInt
+	| CLong
+	| CShort
+	| CBool
+	| CObject
+
+type method_signature = {
+	arity : int;
+	name : string;
+	has_nonobject : bool;
+	sort_string : string;
+	cargs : signature_classification list;
+	cret : signature_classification option;
+	dargs : jsignature list;
+	dret : jsignature option;
+	interface_path : jpath;
+	mutable next : method_signature option;
+}
+
+let tmethod_to_interface : (jmethod_signature -> method_signature) ref = ref (fun _ -> assert false)
+
 let rec has_type_parameter = function
 	| TTypeParameter _ -> true
 	| TArray(jsig,_) -> has_type_parameter jsig
@@ -114,6 +140,9 @@ module NativeSignatures = struct
 
 	let haxe_function_path = (["haxe";"jvm"],"Function")
 	let haxe_function_sig = TObject(haxe_function_path,[])
+
+	let haxe_ifunction_path = (["haxe";"jvm"],"IFunction")
+	let haxe_ifunction_sig = TObject(haxe_ifunction_path,[])
 
 	let void_path = ["java";"lang"],"Void"
 	let void_sig = TObject(void_path,[])
@@ -290,8 +319,9 @@ and write_signature full ch jsig = match jsig with
 			| None -> ()
 		end;
 		write_signature full ch s
-	| TMethod _ ->
-		write_signature full ch NativeSignatures.haxe_function_sig
+	| TMethod meth_sig ->
+		let meth = !tmethod_to_interface meth_sig in
+		write_signature full ch (TObject(meth.interface_path,[]))
 	| TTypeParameter name ->
 		if full then begin
 			write_byte ch (Char.code 'T');

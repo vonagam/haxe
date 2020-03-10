@@ -59,7 +59,7 @@ extern class ClosureDispatch extends Function {}
 
 @:native("haxe.jvm.VarArgs")
 extern class VarArgs extends Function {
-	var func:Function;
+	var func:Function.IFunction;
 
-	public function new(func:Function):Void;
+	public function new(func:Function.IFunction):Void;
 }

@@ -1,29 +1,6 @@
 open JvmSignature
 open NativeSignatures
 
-type signature_classification =
-	| CByte
-	| CChar
-	| CDouble
-	| CFloat
-	| CInt
-	| CLong
-	| CShort
-	| CBool
-	| CObject
-
-type method_signature = {
-	arity : int;
-	name : string;
-	has_nonobject : bool;
-	sort_string : string;
-	cargs : signature_classification list;
-	cret : signature_classification option;
-	dargs : jsignature list;
-	dret : jsignature option;
-	mutable next : method_signature option;
-}
-
 let string_of_classification = function
 	| CByte -> "Byte"
 	| CChar -> "Char"
@@ -94,6 +71,13 @@ class typed_functions = object(self)
 				(Option.map_default string_of_classification "CVoid" cr)
 		in
 		let suffix = Option.map_default string_of_classification "Void" cr in
+		let dargs = List.map declassify cl in
+		let dret = Option.map declassify cr in
+		let interface_name =
+			"Function" ^
+			(String.concat "" (List.map string_of_classification cl)) ^
+			(Option.map_default string_of_classification "Void" cr)
+		in
 		let meth = {
 			arity = List.length cl;
 			name = Printf.sprintf "invoke%s" suffix;
@@ -101,8 +85,9 @@ class typed_functions = object(self)
 			sort_string = to_string (cl,cr);
 			cargs = cl;
 			cret = cr;
-			dargs = List.map declassify cl;
-			dret = Option.map declassify cr;
+			dargs = dargs;
+			dret = dret;
+			interface_path = ["haxe";"generated"],interface_name;
 			next = None;
 		} in
 		if meth.arity > max_arity then max_arity <- meth.arity;
@@ -213,9 +198,13 @@ class typed_functions = object(self)
 
 	method generate_var_args =
 		let jc = new JvmClass.builder (["haxe";"jvm"],"VarArgs") haxe_function_path in
+		let jc_ifunction = new JvmClass.builder (["haxe";"jvm"],"IFunction") object_path in
 		jc#add_access_flag 1; (* public *)
-		let jm_ctor = jc#spawn_method "<init>" (method_sig [haxe_function_sig] None) [MPublic] in
-		jm_ctor#add_argument_and_field "func" haxe_function_sig;
+		jc_ifunction#add_access_flag 1; (* public *)
+		jc_ifunction#add_access_flag 0x200;
+		jc_ifunction#add_access_flag 0x400;
+		let jm_ctor = jc#spawn_method "<init>" (method_sig [haxe_ifunction_sig] None) [MPublic] in
+		jm_ctor#add_argument_and_field "func" haxe_ifunction_sig;
 		jm_ctor#finalize_arguments;
 		jm_ctor#load_this;
 		jm_ctor#call_super_ctor ConstructInit (method_sig [] None);
@@ -223,27 +212,36 @@ class typed_functions = object(self)
 		let rec loop args i =
 			let jsig = method_sig args (Some object_sig) in
 			let jm = jc#spawn_method "invokeObject" jsig [MPublic] in
+			ignore(jc_ifunction#spawn_method "invokeObject" jsig [MPublic;MAbstract]);
 			let vars = ExtList.List.init i (fun i ->
 				jm#add_local (Printf.sprintf "arg%i" i) object_sig VarArgument
 			) in
 			jm#load_this;
-			jm#getfield jc#get_this_path "func" haxe_function_sig;
+			jm#getfield jc#get_this_path "func" haxe_ifunction_sig;
 			jm#new_native_array object_sig (List.map (fun (_,load,_) () -> load()) vars);
 			jm#invokestatic (["haxe";"root"],"Array") "ofNative" (method_sig [array_sig object_sig] (Some (object_path_sig (["haxe";"root"],"Array"))));
-			jm#invokevirtual haxe_function_path "invokeObject" (method_sig [object_sig] (Some object_sig));
+			jm#invokeinterface haxe_ifunction_path "invokeObject" (method_sig [object_sig] (Some object_sig));
 			jm#return;
 			if i < max_arity then loop (object_sig :: args) (i + 1)
 		in
 		loop [] 0;
-		jc
+		[jc;jc_ifunction]
 
 	method generate =
 		let l = Hashtbl.fold (fun _ v acc -> v :: acc) signatures [] in
 		let l = List.sort (fun meth1 meth2 -> compare (meth1.arity,meth1.sort_string) (meth2.arity,meth2.sort_string)) l in
 		let jc = new JvmClass.builder haxe_function_path object_path in
+		jc#add_interface haxe_ifunction_path;
 		jc#add_access_flag 1; (* public *)
-		List.iter (fun meth ->
+		let jcl = List.map (fun meth ->
+			jc#add_interface meth.interface_path;
+			let jc_int = new JvmClass.builder meth.interface_path object_path in
+			jc_int#add_interface haxe_ifunction_path;
+			jc_int#add_access_flag 1;
+			jc_int#add_access_flag 0x200;
+			jc_int#add_access_flag 0x400;
 			let jm = jc#spawn_method meth.name (method_sig meth.dargs meth.dret) [MPublic] in
+			ignore(jc_int#spawn_method meth.name (method_sig meth.dargs meth.dret) [MPublic;MAbstract]);
 			begin match meth.next with
 			| Some meth_next ->
 				self#make_forward_method jc jm meth meth_next;
@@ -261,13 +259,14 @@ class typed_functions = object(self)
 				end;
 				jm#return;
 			end;
-		) l;
+			jc_int
+		) l in
 		let jm_ctor = jc#spawn_method "<init>" (method_sig [] None) [MPublic] in
 		jm_ctor#load_this;
 		jm_ctor#call_super_ctor ConstructInit (method_sig [] None);
 		jm_ctor#return;
 		self#generate_invoke_dynamic jc;
-		jc
+		jc :: jcl
 end
 
 type typed_function_kind =
@@ -315,9 +314,18 @@ class typed_function
 		let meth = functions#register_signature arg_sigs ret in
 		let jsig_invoke = method_sig arg_sigs ret in
 		let jm_invoke = jc_closure#spawn_method meth.name jsig_invoke [MPublic] in
+		let implemented_interfaces = Hashtbl.create 0 in
+		let add_interface meth =
+			if not (Hashtbl.mem implemented_interfaces meth.interface_path) then begin
+				jc_closure#add_interface meth.interface_path;
+				Hashtbl.add implemented_interfaces meth.interface_path true;
+			end
+		in
+		add_interface meth;
 		let rec loop meth =
 			begin match meth.next with
 			| Some meth_next ->
+				add_interface meth_next;
 				let jm_invoke_next = jc_closure#spawn_method meth_next.name (method_sig meth_next.dargs meth_next.dret) [MPublic] in
 				functions#make_forward_method jc_closure jm_invoke_next meth_next meth;
 				loop meth_next;
@@ -339,5 +347,5 @@ class typed_function
 			meth
 		in
 		loop meth;
-		jm_invoke
+		jm_invoke,meth
 end

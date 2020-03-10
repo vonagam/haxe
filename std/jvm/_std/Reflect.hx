@@ -172,6 +172,12 @@ class Reflect {
 
 	@:overload(function(f:Array<Dynamic>->Void):Dynamic {})
 	public static function makeVarArgs(f:Array<Dynamic>->Dynamic):Dynamic {
-		return new jvm.Closure.VarArgs((cast f : jvm.Function));
+		return new jvm.Closure.VarArgs((cast f : jvm.Function.IFunction));
+	}
+
+	@:native("makeVarArgs")
+	@:keep
+	static function notMakeVarArgs(f:Array<Dynamic>->Void):Dynamic {
+		return new jvm.Closure.VarArgs((cast f : jvm.Function.IFunction));
 	}
 }

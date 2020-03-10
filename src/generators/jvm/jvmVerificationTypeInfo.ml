@@ -37,7 +37,7 @@ let of_signature pool jsig = match jsig with
     | TLong -> VLong
     | TDouble -> VDouble
     | TObject(path,_) -> VObject (pool#add_path path)
-	| TMethod _ -> VObject (pool#add_path NativeSignatures.haxe_function_path)
+	| TMethod meth_sig -> VObject (pool#add_path (!tmethod_to_interface meth_sig).interface_path)
 	| TArray _ -> VObject (pool#add_path ([],generate_signature false jsig))
 	| TTypeParameter _ -> VObject (pool#add_path (["java";"lang"],"Object"))
 	| TUninitialized (Some i) -> VUninitialized i
